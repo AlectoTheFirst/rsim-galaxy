@@ -343,6 +343,13 @@ impl Load {
     }
 }
 
+impl Load {
+    /// The shared relations of the load.
+    pub(crate) fn shared(&self) -> Arc<Relations> {
+        Arc::clone(&self.relations)
+    }
+}
+
 /// The framing of a text: 1 text that is a document or a stream by its content, the document of
 /// a `.json` file, the stream of a `.jsonl` file, the pages of the MCP transport with the byte
 /// offset of the end of each page in the joined text, or the pages that the `next` lines end in
@@ -375,28 +382,30 @@ pub fn read(bytes: &[u8], framing: Framing) -> Result<(Relations, Answer), Vec<L
             .as_object()
             .is_some_and(|members| members.len() == 1 && members[0].0 != "format")
     };
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == b'\n')
-        .unwrap_or(bytes.len());
-    let first = line(&bytes[..end]);
     let stream = match framing {
         Framing::Document => false,
         Framing::Stream => true,
-        _ => first
-            .as_ref()
-            .is_some_and(|value| value.get("header").is_some() || is_line(value)),
+        _ => {
+            let end = bytes
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .unwrap_or(bytes.len());
+            line(&bytes[..end])
+                .is_some_and(|value| value.get("header").is_some() || is_line(&value))
+        }
     };
-    match &first {
-        _ if stream => reader.stream(bytes),
-        _ if bytes.len() > DOCUMENT_BYTES => reader.refuse(
+    if stream {
+        reader.stream(bytes);
+    } else if bytes.len() > DOCUMENT_BYTES {
+        reader.refuse(
             "document",
             "text",
             Code::Size,
             format!("{DOCUMENT_BYTES} bytes"),
             None,
-        ),
-        _ => match std::str::from_utf8(bytes) {
+        );
+    } else {
+        match std::str::from_utf8(bytes) {
             Err(error) => reader.refuse(
                 "document",
                 &format!("byte {}", error.valid_up_to()),
@@ -423,7 +432,7 @@ pub fn read(bytes: &[u8], framing: Framing) -> Result<(Relations, Answer), Vec<L
                     None,
                 ),
             },
-        },
+        }
     }
     reader.finish()
 }
@@ -1470,31 +1479,29 @@ impl Reader<'_> {
     }
 
     fn stream(&mut self, bytes: &[u8]) {
-        let mut lines: Vec<&[u8]> = bytes.split(|&byte| byte == b'\n').collect();
-        if lines.last().is_some_and(|line| line.is_empty()) {
-            lines.pop();
-        }
-        let mut ends = Vec::with_capacity(lines.len());
-        let mut offset = 0;
-        for line in &lines {
-            offset += line.len() + 1;
-            ends.push(offset);
-        }
-        let page_ends: &[usize] = match self.framing {
-            Framing::Pages(page_ends) => page_ends,
-            _ => &[],
+        let page_ends: BTreeSet<usize> = match self.framing {
+            Framing::Pages(page_ends) => page_ends.iter().copied().collect(),
+            _ => BTreeSet::new(),
         };
-        let open: BTreeSet<usize> = page_ends
-            .iter()
-            .filter(|&&end| end < bytes.len() && end > 0 && bytes[end - 1] != b'\n')
-            .map(|&end| ends.partition_point(|&line_end| line_end <= end))
-            .collect();
         let unended = !bytes.ends_with(b"\n");
         let mut last = "text".to_owned();
         let mut ended = false;
-        for (index, line) in lines.iter().enumerate() {
+        let mut pieces = bytes.split(|&byte| byte == b'\n');
+        let mut count = 0;
+        let mut start = 0;
+        while start < bytes.len() {
+            let Some(line) = pieces.next() else {
+                break;
+            };
+            let index = count;
+            let line_start = start;
+            count += 1;
+            start += line.len() + 1;
             if self.full() {
-                for line in &lines[index..] {
+                for line in std::iter::once(line).chain(pieces.by_ref()) {
+                    if line.len() > RECORD_BYTES {
+                        continue;
+                    }
                     let flow = std::str::from_utf8(line)
                         .ok()
                         .and_then(|text| Json::parse(text).ok());
@@ -1506,11 +1513,14 @@ impl Reader<'_> {
                 }
                 return;
             }
+            let inside = (line_start + line.len()).min(bytes.len() - 1);
+            let open =
+                inside > line_start && page_ends.range(line_start + 1..=inside).next().is_some();
             let at = format!("line {}", index + 1);
-            if open.contains(&index) {
+            if open {
                 self.refuse(&at, "text", Code::Line, BREAK_VALID.to_owned(), None);
             }
-            if unended && index + 1 == lines.len() {
+            if unended && start > bytes.len() {
                 self.refuse(&at, "text", Code::Line, LF_VALID.to_owned(), None);
             }
             let parsed = if line.len() > RECORD_BYTES {
@@ -1629,7 +1639,7 @@ impl Reader<'_> {
                 }
                 "next"
                     if self.framing == Framing::Kept
-                        || page_ends.contains(&(ends[index].min(bytes.len()))) =>
+                        || page_ends.contains(&start.min(bytes.len())) =>
                 {
                     if self.object(&at, "next", inner) {
                         self.members(&at, "next", "next", inner, &["cursor"], &["cursor"]);
@@ -1665,7 +1675,7 @@ impl Reader<'_> {
             }
         }
         if !ended {
-            let at = format!("line {}", lines.len());
+            let at = format!("line {count}");
             self.refuse(
                 &at,
                 &last,

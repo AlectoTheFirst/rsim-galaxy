@@ -1167,3 +1167,72 @@ fn flow_between_children_of_a_stack_stays_off_their_front_faces() {
         }
     }
 }
+
+#[test]
+fn flow_line_through_a_node_outside_its_parent_is_a_broken_rule() {
+    let mut rules = rules();
+    rules.kinds.get_mut("device").unwrap().margin = -1.5;
+    rules.kinds.get_mut("site").unwrap().margin = -1.0;
+    let mut relations = with_flow(site(), "pass", &["fw-01.in", "fw-01.out"]);
+    relations = with_flow(relations, "across", &["core-01.in", "ips-01.out"]);
+    relations = with_flow(relations, "out", &["client", "dns"]);
+    let world = World::expand(&relations, &rules);
+    let crosses = |start: [f64; 3], end: [f64; 3], index: usize| {
+        let (_, placed, _) = world.node(index);
+        let mut enter: f64 = 0.0;
+        let mut leave: f64 = 1.0;
+        for axis in 0..3 {
+            let low = placed.centre[axis] - placed.size[axis] / 2.0 + 1e-9;
+            let high = placed.centre[axis] + placed.size[axis] / 2.0 - 1e-9;
+            let step = end[axis] - start[axis];
+            if step.abs() < 1e-9 {
+                if start[axis] <= low || start[axis] >= high {
+                    return false;
+                }
+                continue;
+            }
+            let first = (low - start[axis]) / step;
+            let second = (high - start[axis]) / step;
+            enter = enter.max(first.min(second));
+            leave = leave.min(first.max(second));
+            if enter >= leave {
+                return false;
+            }
+        }
+        true
+    };
+    let mut expected = Vec::new();
+    for flow in world.flows() {
+        let mut allowed = vec![false; world.len()];
+        for &node in &flow.nodes {
+            let mut current = Some(node);
+            while let Some(index) = current {
+                allowed[index] = true;
+                current = world.parent(index);
+            }
+        }
+        for (index, &on_path) in allowed.iter().enumerate() {
+            let crossed = flow
+                .points
+                .windows(2)
+                .any(|pair| crosses(pair[0], pair[1], index));
+            if !on_path && crossed {
+                expected.push(Broken::Crosses {
+                    flow: flow.id.clone(),
+                    node: world.node(index).0.id.clone(),
+                });
+            }
+        }
+    }
+    let broken = world.broken();
+    assert!(broken.contains(&Broken::Outside {
+        child: id("fw-01.zone"),
+        parent: id("fw-01")
+    }));
+    let found: Vec<Broken> = broken
+        .into_iter()
+        .filter(|broken| matches!(broken, Broken::Crosses { .. }))
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(found, expected);
+}

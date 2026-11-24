@@ -112,6 +112,8 @@ struct Display {
 struct App {
     viewer: Viewer,
     log: Option<String>,
+    /// The count of the log entries in the file of `log`, none after a failed write.
+    logged: Option<usize>,
     orbit: Orbit,
     display: Option<Display>,
     pointer: PhysicalPosition<f64>,
@@ -124,6 +126,7 @@ impl App {
         let look = viewer.model.style().look;
         let orbit = Orbit::new(&Camera::home(&viewer.world, &look, WINDOW[0] / WINDOW[1]));
         Self {
+            logged: Some(viewer.model.log().len()),
             viewer,
             log,
             orbit,
@@ -278,10 +281,19 @@ impl ApplicationHandler<Request> for App {
         };
         if reply.changed {
             self.home();
-            if let Some(path) = &self.log
-                && let Err(error) = write_log(&self.viewer, path)
-            {
-                eprintln!("{path}: {error}");
+            if let Some(path) = &self.log {
+                let count = self.viewer.model.log().len();
+                let written = match self.logged {
+                    Some(logged) if count > logged => append_log(&self.viewer, path, logged),
+                    _ => write_log(&self.viewer, path),
+                };
+                self.logged = match written {
+                    Ok(()) => Some(count),
+                    Err(error) => {
+                        eprintln!("{path}: {error}");
+                        None
+                    }
+                };
             }
         }
         let _ = request.reply.send(reply);
@@ -423,6 +435,13 @@ fn apply_file(viewer: &mut Viewer, path: &str) -> std::io::Result<()> {
 /// Writes the operation log of `viewer` to the file `path`.
 fn write_log(viewer: &Viewer, path: &str) -> std::io::Result<()> {
     std::fs::write(path, viewer.log())
+}
+
+/// Appends the lines of the operation log of `viewer` from the entry `start` to the file `path`.
+fn append_log(viewer: &Viewer, path: &str, start: usize) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    file.write_all(viewer.log_from(start).as_bytes())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

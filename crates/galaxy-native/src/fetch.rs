@@ -1,10 +1,11 @@
 //! The transports of the sources: the MCP client on the standard input and output of the command
 //! of a source, with the pages of a stream, and the files of a directory.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
 use galaxy_scene::{Code, Framing, Json, LoadRefusal, ObjectId, document};
@@ -17,10 +18,8 @@ pub const PROTOCOL: &str = "2025-06-18";
 pub const TOOL: &str = "galaxy_relations";
 /// Largest number of bytes of a page of the MCP transport.
 pub const PAGE: usize = 4_194_304;
-/// Largest number of bytes of a stream with all its pages joined: the header, the records of
-/// the limits and the end line, each of `document::RECORD_BYTES` bytes and its LF.
-pub const STREAM: usize = (document::RECORDS[0] + document::RECORDS[1] + document::RECORDS[2] + 2)
-    * (document::RECORD_BYTES + 1);
+/// Largest number of bytes of a stream with all its pages joined, and of a `.jsonl` file.
+pub const STREAM: usize = 268_435_456;
 /// Largest number of characters of the cursor of a `next` line.
 pub const CURSOR: usize = 1024;
 /// The kinds of the record lines of a stream.
@@ -29,6 +28,10 @@ const CLASSES: [&str; 3] = ["node", "link", "flow"];
 pub const MESSAGE: usize = 8 * PAGE;
 /// Longest wait for 1 answer of a source.
 pub const WAIT: Duration = Duration::from_secs(60);
+/// Largest number of requests of a source that the client answers during 1 request.
+pub const ASKED: usize = 64;
+/// Largest number of lines of a source in the queue of the reader thread.
+const QUEUE: usize = 2;
 /// Longest wait for the command of a source to end after its standard input closes.
 const END: Duration = Duration::from_secs(1);
 /// Largest number of characters of the text of a source in a refusal.
@@ -338,7 +341,7 @@ impl Mcp {
             .map_err(|error| refusal("command", Code::Source, error.to_string()))?;
         let input = child.stdin.take();
         let output = child.stdout.take().expect("piped standard output");
-        let (send, lines) = channel();
+        let (send, lines) = sync_channel(QUEUE);
         std::thread::spawn(move || {
             let mut output = BufReader::new(output);
             loop {
@@ -405,7 +408,9 @@ impl Mcp {
             .map_err(|error| refusal("command", Code::Source, error.to_string()))
     }
 
-    /// Sends the request `method` with `params` and gives the `result` of its answer.
+    /// Sends the request `method` with `params` and gives the `result` of its answer. The answer
+    /// comes in `WAIT` or the request is refused. The request is refused at request `ASKED` + 1 of
+    /// the source before its answer.
     fn request(&mut self, method: &str, params: Json) -> Result<Json, LoadRefusal> {
         self.id += 1;
         let id = Json::Number(self.id as f64);
@@ -416,18 +421,23 @@ impl Mcp {
             ("params", params),
         ]))?;
         let deadline = Instant::now() + WAIT;
+        let late = || {
+            refusal(
+                method,
+                Code::Source,
+                format!("an answer in {} s", WAIT.as_secs()),
+            )
+        };
+        let mut asked = 0;
         loop {
-            let wait = deadline.saturating_duration_since(Instant::now());
-            let line = match self.lines.recv_timeout(wait) {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(late());
+            }
+            let line = match self.lines.recv_timeout(deadline - now) {
                 Ok(Ok(line)) => line,
                 Ok(Err(cause)) => return Err(refusal(method, Code::Source, cause)),
-                Err(RecvTimeoutError::Timeout) => {
-                    return Err(refusal(
-                        method,
-                        Code::Source,
-                        format!("an answer in {} s", WAIT.as_secs()),
-                    ));
-                }
+                Err(RecvTimeoutError::Timeout) => return Err(late()),
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(refusal(method, Code::Source, "no answer"));
                 }
@@ -438,9 +448,17 @@ impl Mcp {
             else {
                 continue;
             };
-            if let Some(asked) = message.get("method") {
+            if let Some(kind) = message.get("method") {
                 if let Some(request) = message.get("id") {
-                    self.answer(request, asked)?;
+                    asked += 1;
+                    if asked > ASKED {
+                        return Err(refusal(
+                            method,
+                            Code::Source,
+                            format!("{ASKED} requests of the source or fewer"),
+                        ));
+                    }
+                    self.answer(request, kind)?;
                 }
                 continue;
             }
@@ -495,8 +513,8 @@ impl Mcp {
     /// The pages of the answer to `query`, joined in order as sent, with the byte offset of the
     /// end of each page. A page after a page whose last line is `next` is requested with its
     /// cursor. The pages stop with a refusal of the code size when the lines of a class pass
-    /// its limit, when the joined bytes pass `STREAM`, and at a cursor outside 1 to `CURSOR`
-    /// characters.
+    /// its limit, at a page that brings the joined bytes above `STREAM` before the page is
+    /// joined, and at a cursor outside 1 to `CURSOR` characters.
     fn pages(&mut self, query: &str) -> Result<(Vec<u8>, Vec<usize>), LoadRefusal> {
         let versions = Json::Array(
             document::VERSIONS
@@ -506,7 +524,9 @@ impl Mcp {
         );
         let mut bytes = Vec::new();
         let mut ends = Vec::new();
-        let mut cursors: Vec<String> = Vec::new();
+        let mut cursors = BTreeSet::new();
+        let mut last: Option<String> = None;
+        let mut number = 0;
         let mut lines = 0;
         let mut records = [0_usize; 3];
         loop {
@@ -514,7 +534,8 @@ impl Mcp {
                 ("query".to_owned(), Json::string(query)),
                 ("versions".to_owned(), versions.clone()),
             ];
-            if let Some(cursor) = cursors.last() {
+            number += 1;
+            if let Some(cursor) = &last {
                 arguments.push(("cursor".to_owned(), Json::string(cursor)));
             }
             let result = self.request(
@@ -542,7 +563,6 @@ impl Mcp {
                     "a first content item of the type text",
                 ));
             };
-            let number = cursors.len() + 1;
             if page.len() > PAGE {
                 return Err(refusal(
                     &format!("page {number}"),
@@ -570,15 +590,15 @@ impl Mcp {
                     }
                 }
             }
-            bytes.extend_from_slice(page.as_bytes());
-            ends.push(bytes.len());
-            if bytes.len() > STREAM {
+            if bytes.len() + page.len() > STREAM {
                 return Err(refusal(
                     &format!("page {number}"),
                     Code::Size,
                     format!("{STREAM} bytes"),
                 ));
             }
+            bytes.extend_from_slice(page.as_bytes());
+            ends.push(bytes.len());
             let Some(cursor) = next(page) else {
                 return Ok((bytes, ends));
             };
@@ -590,14 +610,14 @@ impl Mcp {
                     format!("next.cursor of 1 to {CURSOR} characters"),
                 ));
             }
-            if cursors.contains(&cursor) {
+            if !cursors.insert(cursor.clone()) {
                 return Err(refusal(
                     &format!("page {number}"),
                     Code::Source,
                     "a cursor of no earlier page",
                 ));
             }
-            cursors.push(cursor);
+            last = Some(cursor);
         }
     }
 

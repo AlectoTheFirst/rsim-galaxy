@@ -3,7 +3,7 @@
 //! documents of a directory.
 //!
 //! `galaxy-fixture <dir> [--page <bytes>] [--credential <variable> <sha256>] [--absent <variable>]
-//! [--echo <variable>] [--pad <count>] [--frame open|early|ask|endless|cursor]`
+//! [--echo <variable>] [--pad <count>] [--frame open|early|ask|flood|endless|cursor]`
 //!
 //! The query is the name of a file of `<dir>`: `<query>.json` is a document, `<query>.jsonl` a
 //! stream. A stream goes in pages of whole lines of at most `--page` bytes, each with a `next` line
@@ -14,7 +14,8 @@
 //! the `next` line of a page comes 2 times: before and after the last record of the page. With
 //! `--frame ask`, the fixture sends the requests `ping` and `roots/list` before each answer of
 //! `galaxy_relations`, and refuses the call unless the answers are an empty result and the error
-//! -32601. With `--frame endless`, each page holds 100,000 node lines and a `next` line with a
+//! -32601. With `--frame flood`, the fixture sends 65 requests `ping` before each answer of
+//! `galaxy_relations` and reads no answer to them. With `--frame endless`, each page holds 100,000 node lines and a `next` line with a
 //! fresh cursor. With `--frame cursor`, the first page holds the header and a `next` line with a
 //! cursor of 1,025 characters.
 
@@ -117,10 +118,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )]),
             Some("tools/call") => {
                 let arguments = params.get("arguments").cloned().unwrap_or(Json::Null);
-                let asked = if options.frame.as_deref() == Some("ask") {
-                    ask(&mut stdout, &mut input)?
-                } else {
-                    Ok(())
+                let asked = match options.frame.as_deref() {
+                    Some("ask") => ask(&mut stdout, &mut input)?,
+                    Some("flood") => {
+                        flood(&mut stdout)?;
+                        Ok(())
+                    }
+                    _ => Ok(()),
                 };
                 let answer = match params.get("name").and_then(Json::as_str) {
                     Some("galaxy_relations") => {
@@ -285,6 +289,22 @@ fn ask(
         }
     }
     Ok(Ok(()))
+}
+
+/// Sends 65 requests `ping` to the client.
+fn flood(stdout: &mut impl Write) -> std::io::Result<()> {
+    for index in 0..65 {
+        writeln!(
+            stdout,
+            "{}",
+            Json::object([
+                ("jsonrpc", Json::string("2.0")),
+                ("id", Json::string(format!("flood-{index}"))),
+                ("method", Json::string("ping")),
+            ])
+        )?;
+    }
+    stdout.flush()
 }
 
 /// A page of 100,000 node lines with a fresh `next` line, after the header on the first page.

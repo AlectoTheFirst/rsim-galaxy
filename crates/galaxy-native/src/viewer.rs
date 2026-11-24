@@ -68,6 +68,10 @@ pub struct Viewer {
     pub world: World,
     pub selection: Option<Selection>,
     pub sources: Option<Arc<Sources>>,
+    /// `true` when `world` is not the world of `model`.
+    stale: bool,
+    /// The renderer of `frame` with no renderer in its call, opened on its first use.
+    renderer: Option<Renderer>,
 }
 
 impl Default for Viewer {
@@ -84,6 +88,8 @@ impl Viewer {
             model,
             selection: None,
             sources,
+            stale: false,
+            renderer: None,
         }
     }
 
@@ -96,10 +102,25 @@ impl Viewer {
         renderer: Option<&Renderer>,
         camera: Option<Camera>,
     ) -> Reply {
+        let reply = self.answer(name, arguments, renderer, camera, true);
+        self.refresh();
+        reply
+    }
+
+    /// Answers the tool `name` as `call` does, and leaves `world` stale after a change. With
+    /// `lines` false, the text of an applied change is empty.
+    fn answer(
+        &mut self,
+        name: &str,
+        arguments: &Json,
+        renderer: Option<&Renderer>,
+        camera: Option<Camera>,
+        lines: bool,
+    ) -> Reply {
         match name {
             "undo" => match self.model.undo() {
                 Some(change) => {
-                    self.refresh();
+                    self.stale = true;
                     let (name, arguments) = wire::encode(&change);
                     Reply {
                         changed: true,
@@ -108,8 +129,14 @@ impl Viewer {
                 }
                 None => Reply::refused("log: no operation"),
             },
-            "describe" => Reply::text(self.describe()),
-            "frame" => self.frame(arguments, renderer, camera),
+            "describe" => {
+                self.refresh();
+                Reply::text(self.describe())
+            }
+            "frame" => {
+                self.refresh();
+                self.frame(arguments, renderer, camera)
+            }
             "sources" => Reply::text(match &self.sources {
                 Some(sources) => sources.to_json().to_string(),
                 None => r#"{"sources":[]}"#.to_owned(),
@@ -123,12 +150,16 @@ impl Viewer {
                 if let Err(refusal) = self.model.apply(change) {
                     return Reply::refused(refusal.to_string());
                 }
-                self.refresh();
-                let text = match (name, arguments.get("name").and_then(Json::as_str)) {
-                    ("define_shape", Some(shape)) => self.library_lines(shape, "shape"),
-                    ("set_material", Some(material)) => self.library_lines(material, "material"),
-                    (_, Some(name)) => self.line(name).unwrap_or_default(),
-                    (_, None) => "applied".to_owned(),
+                self.stale = true;
+                if lines {
+                    self.refresh();
+                }
+                let text = match (lines, name, arguments.get("name").and_then(Json::as_str)) {
+                    (false, _, _) => String::new(),
+                    (_, "define_shape", Some(shape)) => self.library_lines(shape, "shape"),
+                    (_, "set_material", Some(material)) => self.library_lines(material, "material"),
+                    (_, _, Some(name)) => self.line(name).unwrap_or_default(),
+                    (_, _, None) => "applied".to_owned(),
                 };
                 Reply {
                     changed: true,
@@ -141,8 +172,14 @@ impl Viewer {
     /// Applies the operations of a text of JSON lines, each `{"name":...,"arguments":...}`. A
     /// `load_view` with `sha256` replays the kept document of that hash. Gives the line number
     /// from 1 and the reply of each operation that is refused or has lines for the standard
-    /// error.
+    /// error. The world is expanded before each `describe` and `frame`, and after the last line.
     pub fn apply_ops(&mut self, input: impl BufRead) -> std::io::Result<Vec<(usize, Reply)>> {
+        let replies = self.apply_lines(input);
+        self.refresh();
+        replies
+    }
+
+    fn apply_lines(&mut self, input: impl BufRead) -> std::io::Result<Vec<(usize, Reply)>> {
         let mut replies = Vec::new();
         for (index, line) in input.lines().enumerate() {
             let line = line?;
@@ -156,7 +193,7 @@ impl Viewer {
                     if name == "load_view" {
                         self.load(&arguments, load::Origin::Replay)
                     } else {
-                        self.call(name, &arguments, None, None)
+                        self.answer(name, &arguments, None, None, false)
                     }
                 }
                 Err(error) => Reply::refused(error.to_string()),
@@ -171,7 +208,7 @@ impl Viewer {
     /// Reads and applies the load of the arguments of `load_view` from `origin`.
     fn load(&mut self, arguments: &Json, origin: load::Origin) -> Reply {
         match load::read(self.sources.as_deref(), arguments, origin) {
-            Ok(load) => self.apply_load(load),
+            Ok(load) => self.load_change(load),
             Err(refused) => Reply {
                 stderr: refused.stderr,
                 ..Reply::refused(refused.lines.join("\n"))
@@ -181,11 +218,18 @@ impl Viewer {
 
     /// Applies a read load as 1 entry of the log, and answers with the answer of the load.
     pub fn apply_load(&mut self, load: Load) -> Reply {
+        let reply = self.load_change(load);
+        self.refresh();
+        reply
+    }
+
+    /// Applies a read load as `apply_load` does, and leaves `world` stale.
+    fn load_change(&mut self, load: Load) -> Reply {
         let answer = load.answer().to_json().to_string();
         if let Err(refusal) = self.model.apply(Change::Load(load)) {
             return Reply::refused(refusal.to_string());
         }
-        self.refresh();
+        self.stale = true;
         Reply {
             changed: true,
             ..Reply::text(answer)
@@ -195,8 +239,13 @@ impl Viewer {
     /// The operation log as JSON lines, each `{"name":...,"arguments":...}` of the wire form,
     /// a load with its `sha256`. An operation file of these lines replays the log.
     pub fn log(&self) -> String {
+        self.log_from(0)
+    }
+
+    /// The lines of `log` from the entry `start` of the log.
+    pub fn log_from(&self, start: usize) -> String {
         let mut text = String::new();
-        for change in self.model.log() {
+        for change in self.model.log().iter().skip(start) {
             let (name, arguments) = wire::encode(change);
             let line = Json::object([("name", Json::string(name)), ("arguments", arguments)]);
             text.push_str(&format!("{line}\n"));
@@ -297,7 +346,13 @@ impl Viewer {
         }
     }
 
+    /// Expands the world of the model when `world` is stale, and clears a selection that is not
+    /// in it.
     fn refresh(&mut self) {
+        if !self.stale {
+            return;
+        }
+        self.stale = false;
         self.world = self.model.world();
         let present = match &self.selection {
             Some(Selection::Node(id)) => self.world.index(id).is_some(),
@@ -310,7 +365,7 @@ impl Viewer {
     }
 
     fn frame(
-        &self,
+        &mut self,
         arguments: &Json,
         renderer: Option<&Renderer>,
         camera: Option<Camera>,
@@ -328,17 +383,24 @@ impl Viewer {
             (Ok(width), Ok(height)) => (width, height),
             (Err(text), _) | (_, Err(text)) => return Reply::refused(text),
         };
-        let own;
-        let renderer = match renderer {
-            Some(renderer) => renderer,
+        if let Some(renderer) = renderer {
+            return self.draw(renderer, camera, width, height);
+        }
+        let own = match self.renderer.take() {
+            Some(own) => own,
             None => match Renderer::new() {
-                Ok(renderer) => {
-                    own = renderer;
-                    &own
-                }
+                Ok(own) => own,
                 Err(error) => return Reply::refused(error.to_string()),
             },
         };
+        let reply = self.draw(&own, camera, width, height);
+        self.renderer = Some(own);
+        reply
+    }
+
+    /// The PNG image of the frame of `width` by `height` pixels from `camera`, or from the home
+    /// view.
+    fn draw(&self, renderer: &Renderer, camera: Option<Camera>, width: u32, height: u32) -> Reply {
         let look = self.model.style().look;
         let camera = camera
             .unwrap_or_else(|| Camera::home(&self.world, &look, width as f32 / height as f32));

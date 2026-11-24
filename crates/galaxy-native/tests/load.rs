@@ -697,6 +697,17 @@ fn the_client_answers_ping_and_refuses_each_other_request_of_the_source() {
 }
 
 #[test]
+fn a_request_with_65_requests_of_the_source_is_refused() {
+    let mut viewer = framed("flood", "flood");
+    let reply = load(&mut viewer, "inventory", "site-a-stream");
+    assert_eq!(
+        reply.text,
+        "load tools/call: source, valid: 64 requests of the source or fewer"
+    );
+    assert_eq!(viewer.model.log().len(), 0);
+}
+
+#[test]
 fn pages_stop_at_the_limit_of_the_nodes() {
     let mut viewer = framed("endless", "endless");
     let reply = load(&mut viewer, "inventory", "site-a");
@@ -738,6 +749,32 @@ fn a_json_file_above_the_document_limit_is_refused_before_it_is_read() {
     let mut viewer = Viewer::new(Some(Arc::new(Sources::read(&path).unwrap())));
     let reply = load(&mut viewer, "files", "large");
     assert_eq!(reply.text, "document text: size, valid: 67108864 bytes");
+}
+
+#[test]
+fn a_jsonl_file_above_the_stream_limit_is_refused_before_it_is_read() {
+    let dir = directory("large-stream");
+    let files = dir.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let file = std::fs::File::create(files.join("large.jsonl")).unwrap();
+    file.set_len(galaxy_native::fetch::STREAM as u64 + 1)
+        .unwrap();
+    let configuration = Json::object([(
+        "sources",
+        Json::object([(
+            "files",
+            Json::object([
+                ("transport", Json::string("file")),
+                ("description", Json::string("saved documents")),
+                ("path", Json::string("files")),
+            ]),
+        )]),
+    )]);
+    let path = dir.join("sources.json");
+    std::fs::write(&path, configuration.to_string()).unwrap();
+    let mut viewer = Viewer::new(Some(Arc::new(Sources::read(&path).unwrap())));
+    let reply = load(&mut viewer, "files", "large");
+    assert_eq!(reply.text, "document text: size, valid: 268435456 bytes");
 }
 
 #[test]

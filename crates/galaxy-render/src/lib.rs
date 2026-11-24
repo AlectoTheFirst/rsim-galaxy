@@ -3,7 +3,7 @@
 pub mod mesh;
 mod text;
 
-use std::cell::{Ref, RefCell};
+use std::cell::{OnceCell, Ref, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
@@ -15,8 +15,8 @@ use text::{Face, Fonts, Run, Text};
 
 use bytemuck::{Pod, Zeroable};
 use galaxy_scene::{
-    Colours, Library, Light, Lines, Look, ObjectId, OutcomeKind, Placed, Projection, Scheme, Shape,
-    Space, World,
+    Colours, DefinedShape, Library, Light, Lines, Look, ObjectId, OutcomeKind, Placed, Projection,
+    Scheme, Shape, Space, World,
 };
 use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
@@ -542,21 +542,47 @@ struct Layer<'a> {
     viewport: Option<([f32; 4], [f32; 2])>,
 }
 
-/// The mesh registry of a library and its vertex buffer.
+/// The mesh registry of a library and its vertex buffer, with the defined shapes and the
+/// material names of that library.
 struct Meshes {
     registry: Registry,
     corners: wgpu::Buffer,
+    shapes: Vec<DefinedShape>,
+    materials: Vec<String>,
 }
 
 impl Meshes {
+    /// The meshes of `library`, or the built-in meshes when the vertices of `library` exceed
+    /// the largest buffer of `device`.
     fn new(device: &wgpu::Device, library: &Library) -> Self {
-        let registry = Registry::with_library(library);
+        let mut registry = Registry::with_library(library);
+        if size_of_val(registry.vertices.as_slice()) as u64 > device.limits().max_buffer_size {
+            registry = Registry::new();
+        }
         let corners = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("meshes"),
             contents: bytemuck::cast_slice(&registry.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Self { registry, corners }
+        Self {
+            registry,
+            corners,
+            shapes: library.shapes.clone(),
+            materials: library
+                .materials
+                .iter()
+                .map(|material| material.name.clone())
+                .collect(),
+        }
+    }
+
+    /// `true` when the meshes are the meshes of `library`.
+    fn matches(&self, library: &Library) -> bool {
+        self.shapes == library.shapes
+            && self
+                .materials
+                .iter()
+                .eq(library.materials.iter().map(|material| &material.name))
     }
 }
 
@@ -585,6 +611,9 @@ pub struct Renderer {
     meshes: RefCell<Meshes>,
     text: Text,
     targets: RefCell<Option<Targets>>,
+    /// The renderer of `IMAGE_FORMAT` on the same device for `render`, built on its first use
+    /// when `format` differs.
+    image: OnceCell<Box<Renderer>>,
 }
 
 impl Renderer {
@@ -721,6 +750,7 @@ impl Renderer {
             meshes,
             text,
             targets: RefCell::new(None),
+            image: OnceCell::new(),
         }
     }
 
@@ -735,7 +765,7 @@ impl Renderer {
     /// The meshes of `library`, built again when its defined shapes or its material names differ
     /// from those of the kept meshes.
     fn meshes(&self, library: &Library) -> Ref<'_, Meshes> {
-        if !self.meshes.borrow().registry.matches(library) {
+        if !self.meshes.borrow().matches(library) {
             *self.meshes.borrow_mut() = Meshes::new(&self.device, library);
         }
         self.meshes.borrow()
@@ -881,12 +911,16 @@ impl Renderer {
     /// Draws `view` into an image of `width` by `height` pixels.
     pub fn render(&self, view: &View, width: u32, height: u32) -> Result<Image, RenderError> {
         let target = self.texture(IMAGE_FORMAT, 1, width, height);
-        let renderer;
         let renderer = if self.format == IMAGE_FORMAT {
             self
         } else {
-            renderer = Self::with_device(self.device.clone(), self.queue.clone(), IMAGE_FORMAT);
-            &renderer
+            self.image.get_or_init(|| {
+                Box::new(Self::with_device(
+                    self.device.clone(),
+                    self.queue.clone(),
+                    IMAGE_FORMAT,
+                ))
+            })
         };
         renderer.draw(
             view,

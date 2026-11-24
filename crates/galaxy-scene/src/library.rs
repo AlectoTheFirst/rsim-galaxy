@@ -66,12 +66,39 @@ pub struct Part {
     pub edges: bool,
 }
 
+/// Count of the points of the section of a cylinder in the meshes of the renderer.
+const CYLINDER_POINTS: usize = 48;
+/// Count of the vertices of an edge bar in the meshes of the renderer.
+const BAR: usize = 36;
+
+impl Part {
+    /// An upper bound of the vertices of the part in the 3 meshes of its shape in the renderer.
+    /// The solid of a section of n points has 12n - 12 vertices and is in 2 meshes. The edges are
+    /// 12 bars for a box, 2n bars for a cylinder and 3n bars for a prism.
+    pub fn vertices(&self) -> usize {
+        let (points, bars) = match &self.solid {
+            Solid::Box => (4, 12),
+            Solid::Cylinder => (CYLINDER_POINTS, 2 * CYLINDER_POINTS),
+            Solid::Prism(points) => (points.len(), 3 * points.len()),
+        };
+        let solid = (12 * points).saturating_sub(12);
+        2 * solid + if self.edges { BAR * bars } else { 0 }
+    }
+}
+
 /// A shape of the agent: its name, its parts, and the indexes of the parts of its symbol.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DefinedShape {
     pub name: String,
     pub parts: Vec<Part>,
     pub symbol: Vec<usize>,
+}
+
+impl DefinedShape {
+    /// The sum of `Part::vertices` over the parts.
+    pub fn vertices(&self) -> usize {
+        self.parts.iter().map(Part::vertices).sum()
+    }
 }
 
 /// The colour of a material in the light and the dark scheme as sRGB bytes, and `true` for a
@@ -113,6 +140,15 @@ impl Library {
     pub const PARTS: [usize; 2] = [1, 256];
     /// Smallest and largest number of points of the polygon of a prism.
     pub const POINTS: [usize; 2] = [3, 64];
+    /// Largest number of defined shapes.
+    pub const SHAPES: usize = 64;
+    /// Largest sum of `DefinedShape::vertices` over the defined shapes.
+    pub const VERTICES: usize = 1_000_000;
+
+    /// The sum of `DefinedShape::vertices` over the defined shapes.
+    pub fn vertices(&self) -> usize {
+        self.shapes.iter().map(DefinedShape::vertices).sum()
+    }
 
     /// The index of the defined shape `name`.
     pub fn shape(&self, name: &str) -> Option<usize> {
