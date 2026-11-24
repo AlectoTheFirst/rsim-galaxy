@@ -31,9 +31,16 @@ impl Json {
     /// The value of a JSON text with no other text than white space around it, with each member
     /// name 1 time in an object.
     pub fn parse(text: &str) -> Result<Json, JsonError> {
+        Self::parse_limited(text, usize::MAX)
+    }
+
+    /// The value of `parse` with at most `values` JSON values in it. A text with more values is
+    /// refused with the cause `TOO_MANY`.
+    pub fn parse_limited(text: &str, values: usize) -> Result<Json, JsonError> {
         let mut parser = Parser {
             bytes: text.as_bytes(),
             offset: 0,
+            left: values,
         };
         let value = parser.value(0)?;
         parser.space();
@@ -158,9 +165,14 @@ fn write_string(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
 /// Depth of nested arrays and objects that the parser accepts.
 const MAX_DEPTH: usize = 128;
 
+/// Cause of a text with more values than the limit of `Json::parse_limited`.
+pub const TOO_MANY: &str = "more values than the limit";
+
 struct Parser<'a> {
     bytes: &'a [u8],
     offset: usize,
+    /// Values that the parser can still accept.
+    left: usize,
 }
 
 impl Parser<'_> {
@@ -190,6 +202,10 @@ impl Parser<'_> {
         if depth > MAX_DEPTH {
             return Err(self.error("nesting deeper than 128"));
         }
+        if self.left == 0 {
+            return Err(self.error(TOO_MANY));
+        }
+        self.left -= 1;
         self.space();
         match self.bytes.get(self.offset) {
             None => Err(self.error("end of text")),

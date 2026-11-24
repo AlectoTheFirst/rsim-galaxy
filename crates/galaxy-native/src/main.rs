@@ -37,6 +37,10 @@ const CLICK: f64 = 4.0;
 const TURN: f32 = 0.006;
 /// Width and height of the window when it opens.
 const WINDOW: [f32; 2] = [1280.0, 800.0];
+/// Factor of the distance of the home view that bounds the camera distance on each side.
+const REACH: f32 = 1000.0;
+/// Smallest and largest width and height of the frame of `--png`.
+const PNG: [u32; 2] = [16, 4096];
 
 /// A tool call or a read load from the MCP thread, with the channel of its answer.
 struct Request {
@@ -56,6 +60,8 @@ struct Orbit {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    /// Smallest and largest distance.
+    range: [f32; 2],
     fov_y_degrees: f32,
 }
 
@@ -73,6 +79,7 @@ impl Orbit {
             yaw: offset[0].atan2(offset[2]),
             pitch: (offset[1] / distance).asin(),
             distance,
+            range: [distance / REACH, (distance * REACH).min(f32::MAX)],
             fov_y_degrees: camera.fov_y_degrees,
         }
     }
@@ -98,7 +105,10 @@ impl Orbit {
     }
 
     fn zoom(&mut self, steps: f32) {
-        self.distance *= 0.9_f32.powf(steps);
+        if steps.is_finite() {
+            self.distance =
+                (self.distance * 0.9_f32.powf(steps)).clamp(self.range[0], self.range[1]);
+        }
     }
 }
 
@@ -107,6 +117,8 @@ struct Display {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
+    /// `true` after a frame found the surface outdated or lost and requested 1 more frame.
+    retried: bool,
 }
 
 struct App {
@@ -184,6 +196,7 @@ impl App {
             surface,
             config,
             renderer,
+            retried: false,
         })
     }
 
@@ -198,11 +211,15 @@ impl App {
                 display
                     .surface
                     .configure(display.renderer.device(), &display.config);
-                display.window.request_redraw();
+                if !display.retried {
+                    display.retried = true;
+                    display.window.request_redraw();
+                }
                 return;
             }
             _ => return,
         };
+        display.retried = false;
         let target = frame.texture.create_view(&Default::default());
         let look = self.viewer.model.style().look;
         let camera = self.orbit.camera();
@@ -391,16 +408,8 @@ fn arguments() -> Result<Arguments, String> {
             "--sources" => parsed.sources = Some(value("--sources")?),
             "--ops" => parsed.ops = Some(value("--ops")?),
             "--png" => parsed.png = Some(value("--png")?),
-            "--width" => {
-                parsed.width = value("--width")?
-                    .parse()
-                    .map_err(|_| "--width: expected a number".to_owned())?
-            }
-            "--height" => {
-                parsed.height = value("--height")?
-                    .parse()
-                    .map_err(|_| "--height: expected a number".to_owned())?
-            }
+            "--width" => parsed.width = size("--width", &value("--width")?)?,
+            "--height" => parsed.height = size("--height", &value("--height")?)?,
             "--mcp" => parsed.mcp = true,
             "--select" => parsed.select = Some(value("--select")?),
             "--log" => parsed.log = Some(value("--log")?),
@@ -413,6 +422,21 @@ fn arguments() -> Result<Arguments, String> {
         }
     }
     Ok(parsed)
+}
+
+/// The width or the height of the option `name` from `text`, a whole number from `PNG[0]` to
+/// `PNG[1]`.
+fn size(name: &str, text: &str) -> Result<u32, String> {
+    let value: u32 = text
+        .parse()
+        .map_err(|_| format!("{name}: expected a number"))?;
+    if !(PNG[0]..=PNG[1]).contains(&value) {
+        return Err(format!(
+            "{name}: {value}, valid: integer {} to {}",
+            PNG[0], PNG[1]
+        ));
+    }
+    Ok(value)
 }
 
 /// Applies the operations of the file `path` to `viewer`, and writes the lines for the standard

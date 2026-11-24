@@ -1322,6 +1322,7 @@ fn boxes(view: &View, width: u32, height: u32) -> Boxes {
     let camera = view.camera;
     let colours = palette(look.scheme);
     let library = world.library();
+    let regions = mesh::Regions::new(library);
     let (surface, surface_lit) = match library.materials.first().and_then(|body| body.colours) {
         Some(body) => (scheme_colour(&body, look.scheme), body.lit),
         None => (colours.surface, true),
@@ -1420,7 +1421,7 @@ fn boxes(view: &View, width: u32, height: u32) -> Boxes {
                 let (axis, part) = forms.symbol;
                 let fitted = |fit: Fit, size: [f64; 3]| match (fit.across(), reference) {
                     (Some(across), Some(reference)) => {
-                        mesh::fitted(size, reference, across, mesh::region(forms.full, fit))
+                        mesh::fitted(size, reference, across, regions.get(forms.full, fit))
                     }
                     _ => size,
                 };
@@ -2202,26 +2203,71 @@ fn crossings(strokes: &[Stroke]) -> Vec<Vec<[f64; 3]>> {
     let within = |value: f64, from: f64, to: f64| {
         value >= from.min(to) - 1e-9 && value <= from.max(to) + 1e-9
     };
-    for (place, first) in segments.iter().enumerate() {
-        for second in &segments[place + 1..] {
-            let (a, b) = (first.1, second.1);
-            if first.0 == second.0
-                || a == b
-                || (first.2[3 - a - b] - second.2[3 - a - b]).abs() > 1e-6
-            {
-                continue;
-            }
-            if within(second.2[a], first.2[a], first.3[a])
-                && within(first.2[b], second.2[b], second.3[b])
-            {
-                let mut point = first.2;
-                point[a] = second.2[a];
-                found[first.0].push(point);
-                found[second.0].push(point);
-            }
+    for (place, other) in pairs(&segments) {
+        let (first, second) = (&segments[place], &segments[other]);
+        let (a, b) = (first.1, second.1);
+        if first.0 == second.0 || a == b || (first.2[3 - a - b] - second.2[3 - a - b]).abs() > 1e-6
+        {
+            continue;
+        }
+        if within(second.2[a], first.2[a], first.3[a])
+            && within(first.2[b], second.2[b], second.3[b])
+        {
+            let mut point = first.2;
+            point[a] = second.2[a];
+            found[first.0].push(point);
+            found[second.0].push(point);
         }
     }
     found
+}
+
+/// Margin around the box of a segment in `pairs`.
+const NEAR: f64 = 2e-6;
+
+/// The pairs of places in `segments`, the lower place first, in ascending order: each pair of 2
+/// segments whose boxes, each with `NEAR` on each side, meet on each axis, and each pair with a
+/// segment that has a coordinate that is not finite. The segments are swept in the order of the
+/// low end of their boxes on x.
+fn pairs(segments: &[(usize, usize, [f64; 3], [f64; 3])]) -> Vec<(usize, usize)> {
+    let boxes: Vec<[[f64; 2]; 3]> = segments
+        .iter()
+        .map(|(_, _, from, to)| {
+            [0, 1, 2].map(|axis| {
+                [
+                    from[axis].min(to[axis]) - NEAR,
+                    from[axis].max(to[axis]) + NEAR,
+                ]
+            })
+        })
+        .collect();
+    let (mut order, wild): (Vec<usize>, Vec<usize>) = (0..segments.len()).partition(|&place| {
+        let (_, _, from, to) = &segments[place];
+        from.iter().chain(to).all(|value| value.is_finite())
+    });
+    order.sort_by(|&p, &q| boxes[p][0][0].total_cmp(&boxes[q][0][0]).then(p.cmp(&q)));
+    let mut pairs = Vec::new();
+    for (rank, &place) in order.iter().enumerate() {
+        for &other in &order[rank + 1..] {
+            if boxes[other][0][0] > boxes[place][0][1] {
+                break;
+            }
+            if (1..3).all(|axis| {
+                boxes[other][axis][0] <= boxes[place][axis][1]
+                    && boxes[place][axis][0] <= boxes[other][axis][1]
+            }) {
+                pairs.push((place.min(other), place.max(other)));
+            }
+        }
+    }
+    for &place in &wild {
+        for other in (0..segments.len()).filter(|&other| other != place) {
+            pairs.push((place.min(other), place.max(other)));
+        }
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
 }
 
 /// Appends the lines of the floor grid under the nodes with no parent: a line at each multiple

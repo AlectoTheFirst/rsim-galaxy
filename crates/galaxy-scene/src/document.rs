@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::id::ObjectId;
-use crate::json::Json;
+use crate::json::{self, Json};
 use crate::sha256;
 use crate::world::{Outcome, OutcomeKind, RelationRefusal, Relations};
 
@@ -16,6 +16,8 @@ pub const VERSIONS: &[&str] = &["0.1"];
 pub const REFUSALS: usize = 20;
 /// Largest number of bytes of a document as 1 JSON object.
 pub const DOCUMENT_BYTES: usize = 67_108_864;
+/// Largest number of JSON values of a document as 1 JSON object.
+pub const DOCUMENT_VALUES: usize = 8_388_608;
 /// Largest number of bytes of the JSON text of 1 record and of 1 line of a stream.
 pub const RECORD_BYTES: usize = 1_048_576;
 /// Largest number of nodes, links and flows of a document.
@@ -413,7 +415,7 @@ pub fn read(bytes: &[u8], framing: Framing) -> Result<(Relations, Answer), Vec<L
                 "JSON of RFC 8259 in UTF-8".to_owned(),
                 None,
             ),
-            Ok(text) => match Json::parse(text) {
+            Ok(text) => match Json::parse_limited(text, DOCUMENT_VALUES) {
                 Ok(value) => reader.document(&value),
                 Err(_)
                     if framing != Framing::Document
@@ -424,6 +426,13 @@ pub fn read(bytes: &[u8], framing: Framing) -> Result<(Relations, Answer), Vec<L
                 {
                     reader.stream(bytes)
                 }
+                Err(error) if error.cause == json::TOO_MANY => reader.refuse(
+                    "document",
+                    "text",
+                    Code::Size,
+                    format!("{DOCUMENT_VALUES} values"),
+                    None,
+                ),
                 Err(error) => reader.refuse(
                     "document",
                     &format!("byte {}", error.offset),
@@ -564,8 +573,27 @@ impl Reader<'_> {
         known: &[&str],
         required: &[&str],
     ) -> bool {
+        let complete = self.require(at, prefix, value, required, required);
+        for (name, _) in value.as_object().unwrap_or_default() {
+            if !known.contains(&name.as_str()) && ObjectId::new(name).is_some() {
+                self.ignore(join(ignore, name));
+            }
+        }
+        complete
+    }
+
+    /// Refuses each missing member of `names` with the valid value `required`. `true` with each
+    /// member of `names`.
+    fn require(
+        &mut self,
+        at: &str,
+        prefix: &str,
+        value: &Json,
+        names: &[&str],
+        required: &[&str],
+    ) -> bool {
         let mut complete = true;
-        for name in required {
+        for name in names {
             if value.get(name).is_none() {
                 self.refuse(
                     at,
@@ -575,11 +603,6 @@ impl Reader<'_> {
                     None,
                 );
                 complete = false;
-            }
-        }
-        for (name, _) in value.as_object().unwrap_or_default() {
-            if !known.contains(&name.as_str()) && ObjectId::new(name).is_some() {
-                self.ignore(join(ignore, name));
             }
         }
         complete
@@ -963,14 +986,18 @@ impl Reader<'_> {
         }
     }
 
-    /// Reads a document: its members, `format` and `version`, then `source`, `partial` and the
-    /// record arrays in the order of the text, with the arrays in the order nodes, links and
+    /// Reads a document: `format` and `version`, the other members, then `source`, `partial` and
+    /// the record arrays in the order of the text, with the arrays in the order nodes, links and
     /// flows.
     fn document(&mut self, value: &Json) {
         let at = "document";
         if !self.object(at, "document", value) {
             return;
         }
+        let required = ["format", "version", "source", "nodes"];
+        self.require(at, "", value, &required[..2], &required);
+        let format = self.format(at, value);
+        self.require(at, "", value, &required[2..], &required);
         self.members(
             at,
             "",
@@ -979,9 +1006,9 @@ impl Reader<'_> {
             &[
                 "format", "version", "source", "nodes", "links", "flows", "partial",
             ],
-            &["format", "version", "source", "nodes"],
+            &[],
         );
-        if !self.format(at, value) {
+        if !format {
             return;
         }
         self.source_at = at.to_owned();

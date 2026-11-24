@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use galaxy_native::mcp;
 use galaxy_native::sources::{DOCUMENTS, Sources};
 use galaxy_native::viewer::{Reply, Viewer};
+use galaxy_native::{fetch, mcp};
 use galaxy_scene::{Json, sha256, wire};
 
 const FIXTURE: &str = env!("CARGO_BIN_EXE_galaxy-fixture");
@@ -437,6 +437,34 @@ fn a_bare_command_name_is_the_program_of_that_name_in_the_directory_of_the_confi
 }
 
 #[test]
+fn a_relative_command_path_resolves_in_the_directory_of_the_configuration() {
+    let dir = directory("relative-command");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(FIXTURE, dir.join("bin").join("galaxy-probe-adapter")).unwrap();
+    let command = Json::Array(
+        ["bin/galaxy-probe-adapter", documents().to_str().unwrap()]
+            .map(Json::string)
+            .to_vec(),
+    );
+    let configuration = Json::object([(
+        "sources",
+        Json::object([(
+            "inventory",
+            Json::object([
+                ("transport", Json::string("mcp")),
+                ("description", Json::string("inventory adapter")),
+                ("command", command),
+            ]),
+        )]),
+    )]);
+    let path = dir.join("sources.json");
+    std::fs::write(&path, configuration.to_string()).unwrap();
+    let mut viewer = Viewer::new(Some(Arc::new(Sources::read(&path).unwrap())));
+    let reply = load(&mut viewer, "inventory", "site-a");
+    assert!(!reply.refused, "{}", reply.text);
+}
+
+#[test]
 fn a_page_with_no_line_break_before_the_next_page_or_with_an_early_next_line_is_refused_at_its_line()
  {
     for (frame, text) in [
@@ -663,6 +691,32 @@ fn the_mcp_server_lists_and_calls_sources_and_load_view() {
         ("load transport: source, valid: mcp, file".to_owned(), true)
     );
     assert_eq!(viewer.world.flows().len(), 3);
+}
+
+#[test]
+fn a_line_above_the_message_limit_gets_a_parse_error_and_the_next_line_an_answer() {
+    use std::io::Read;
+    let next = "\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n";
+    let input = std::io::BufReader::new(
+        std::io::repeat(b'a')
+            .take(fetch::MESSAGE as u64 + 10)
+            .chain(next.as_bytes()),
+    );
+    let mut output = Vec::new();
+    let mut viewer = Viewer::default();
+    mcp::serve(input, &mut output, |name, arguments| {
+        viewer.call(name, arguments, None, None)
+    })
+    .unwrap();
+    let answers: Vec<Json> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| Json::parse(line).unwrap())
+        .collect();
+    assert_eq!(answers.len(), 2);
+    let error = answers[0].get("error").unwrap();
+    assert_eq!(error.get("code"), Some(&Json::Number(-32700.0)));
+    assert_eq!(answers[1].get("id"), Some(&Json::Number(2.0)));
 }
 
 /// A viewer with the source `inventory`, the fixture with `--frame frame`.
