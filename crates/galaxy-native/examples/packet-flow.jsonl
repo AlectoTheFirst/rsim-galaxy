@@ -1,0 +1,12 @@
+{"name":"add_node","arguments":{"name":"site-a","kind":"site"}}
+{"name":"add_node","arguments":{"name":"fw-01","kind":"device","in":"site-a","fields":{"vendor":"example"}}}
+{"name":"add_node","arguments":{"name":"core-01","kind":"device","in":"site-a"}}
+{"name":"add_node","arguments":{"name":"fw-01.in","kind":"function","in":"fw-01","fields":{"kind":"ingress"}}}
+{"name":"add_node","arguments":{"name":"fw-01.policy","kind":"function","in":"fw-01","fields":{"kind":"firewall_policy","rule":"client-to-dns"}}}
+{"name":"add_node","arguments":{"name":"fw-01.out","kind":"function","in":"fw-01","fields":{"kind":"egress"}}}
+{"name":"add_node","arguments":{"name":"core-01.in","kind":"function","in":"core-01","fields":{"kind":"ingress"}}}
+{"name":"add_node","arguments":{"name":"core-01.route","kind":"function","in":"core-01","fields":{"kind":"route_lookup","route":"192.0.2.0/24"}}}
+{"name":"add_node","arguments":{"name":"core-01.out","kind":"function","in":"core-01","fields":{"kind":"egress"}}}
+{"name":"add_node","arguments":{"name":"client","kind":"endpoint","in":"site-a","fields":{"ip":"198.51.100.20"}}}
+{"name":"add_node","arguments":{"name":"dns","kind":"endpoint","in":"site-a","fields":{"ip":"192.0.2.53"}}}
+{"name":"add_flow","arguments":{"name":"client-dns","path":["client","fw-01.in","fw-01.policy","fw-01.out","core-01.in","core-01.route","core-01.out","dns"]}}

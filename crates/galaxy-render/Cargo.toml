@@ -1,0 +1,17 @@
+[package]
+name = "galaxy-render"
+description = "Draw code of the galaxy engine on wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+galaxy-scene = { path = "../galaxy-scene" }
+wgpu = "30.0.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.34.3"
+png = "0.18.1"
+pollster = "1.0.3"
+ab_glyph = "0.2.32"

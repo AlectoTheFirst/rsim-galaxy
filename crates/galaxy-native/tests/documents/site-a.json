@@ -1,0 +1,149 @@
+{
+  "format": "galaxy-relations",
+  "version": "0.1",
+  "source": {
+    "name": "example-inventory",
+    "version": "0.1.0",
+    "snapshot": "snapshot-2026-11-23-120000",
+    "time": "2026-11-23T12:00:00Z",
+    "query": "site-a"
+  },
+  "nodes": [
+    {
+      "id": "internet",
+      "kind": "network",
+      "fields": {
+        "prefix": "203.0.113.0/24"
+      }
+    },
+    {
+      "id": "site-a",
+      "kind": "site",
+      "label": "Site A"
+    },
+    {
+      "id": "rack-1",
+      "kind": "rack",
+      "in": "site-a"
+    },
+    {
+      "id": "rack-2",
+      "kind": "rack",
+      "in": "site-a"
+    },
+    {
+      "id": "edge-1",
+      "kind": "router",
+      "in": "rack-1",
+      "fields": {
+        "vendor": "example",
+        "management_address": "192.0.2.1"
+      }
+    },
+    {
+      "id": "fw-1",
+      "kind": "firewall",
+      "in": "rack-1",
+      "fields": {
+        "vendor": "example",
+        "management_address": "192.0.2.2"
+      }
+    },
+    {
+      "id": "core-1",
+      "kind": "l3-switch",
+      "in": "rack-1",
+      "fields": {
+        "vendor": "example",
+        "management_address": "192.0.2.3"
+      }
+    },
+    {
+      "id": "access-1",
+      "kind": "switch",
+      "in": "rack-2",
+      "fields": {
+        "vendor": "example",
+        "management_address": "192.0.2.4"
+      }
+    },
+    {
+      "id": "web-1",
+      "kind": "server",
+      "in": "rack-2",
+      "fields": {
+        "ip": "192.0.2.80"
+      }
+    },
+    {
+      "id": "dns-1",
+      "kind": "server",
+      "in": "rack-2",
+      "fields": {
+        "ip": "192.0.2.53"
+      }
+    },
+    {
+      "id": "client-1",
+      "kind": "endpoint",
+      "in": "internet",
+      "fields": {
+        "ip": "203.0.113.20"
+      }
+    }
+  ],
+  "flows": [
+    {
+      "id": "web",
+      "path": [
+        "client-1",
+        "edge-1",
+        "fw-1",
+        "core-1",
+        "access-1",
+        "web-1"
+      ],
+      "outcome": {
+        "kind": "deliver"
+      },
+      "fields": {
+        "protocol": "tcp",
+        "destination": "192.0.2.80",
+        "destination_port": 443
+      }
+    },
+    {
+      "id": "dns",
+      "path": [
+        "web-1",
+        "access-1",
+        "dns-1"
+      ],
+      "outcome": {
+        "kind": "deliver"
+      },
+      "fields": {
+        "protocol": "udp",
+        "destination": "192.0.2.53",
+        "destination_port": 53
+      }
+    },
+    {
+      "id": "ssh",
+      "path": [
+        "client-1",
+        "edge-1",
+        "fw-1"
+      ],
+      "outcome": {
+        "kind": "drop",
+        "reason": "policy WAN-IN, rule default"
+      },
+      "fields": {
+        "protocol": "tcp",
+        "destination": "192.0.2.80",
+        "destination_port": 22
+      }
+    }
+  ]
+}

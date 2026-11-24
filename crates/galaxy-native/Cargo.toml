@@ -1,0 +1,22 @@
+[package]
+name = "galaxy-native"
+description = "Desktop window of the galaxy engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "galaxy-native"
+
+[[bin]]
+name = "galaxy-fixture"
+path = "src/bin/galaxy-fixture.rs"
+test = false
+doc = false
+
+[dependencies]
+galaxy-scene = { path = "../galaxy-scene" }
+galaxy-render = { path = "../galaxy-render" }
+wgpu = "30.0.2"
+winit = "0.30.13"
+pollster = "1.0.3"

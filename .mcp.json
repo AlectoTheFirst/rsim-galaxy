@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "galaxy": {
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "-p", "galaxy-native", "--", "--mcp"]
+    }
+  }
+}

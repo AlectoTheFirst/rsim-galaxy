@@ -1,0 +1,224 @@
+# CLAUDE.md
+
+Instructions for Claude Code in this repository.
+
+## Where to find
+
+- `STATUS.md`: the state of each crate, included at the end of this file
+- `../rsim-project/design/rsim-galaxy.md`: the design, the decisions of the owner and the open points. It governs when 2 documents disagree.
+- `../rsim-project/roadmap.md`: the section "Scene engine with an agent"
+- `../rsim-project/design/ui-design-language.md`: the UI tokens and section 7.1 "Forbidden prose"
+- `../rsim`: the first user of the engine
+
+## Public repository
+
+- This repository is public. Do not commit the design documents, real configs, collected state, private keys or host names of the owner's infrastructure.
+- Test data uses only documentation addresses and invented names.
+
+## Where documentation goes
+
+This repository holds only code, tests, usage how-tos, `STATUS.md` and the README. Design notes go in `../rsim-project/design/`. Do not add a `docs/` folder or another documentation file unless the owner asks for it.
+
+## Code comments
+
+A comment or a docstring describes the code that it belongs to. Do not write design text, reasons for a decision or section numbers of the design note in the code. Design text goes in `../rsim-project/design/`.
+
+## Current information only
+
+Docs, code comments, docstrings, commit-tracked notes and test descriptions state only the current design and the current state. Do not refer to earlier decisions, earlier designs, earlier values or rejected options. Do not write "was", "previously", "changed from", "instead of" or "no longer" about the project. If a design or a value changes, overwrite the old text. Git history keeps the old states.
+
+## No AI slop
+
+AI slop is forbidden. It applies to each text that Claude writes for this project:
+
+- the product text: a label, a button, a column head, a section head, a placeholder, a hint, a note, a `title`, an `aria-label`, an option of a select, an empty state
+- the API text: a problem title and detail, a description of a table, a column, a claim, an operation, an argument or a field, an OpenAPI or MCP text, a CLI help text and error
+- the refusal text and the scene text of the engine
+- the README, `STATUS.md`, the docs, the design notes in `../rsim-project/design/`, the code comments, the docstrings and the test names
+- the commit messages, the pull request texts, the review comments and the answers to the owner
+
+AI slop is a style, not a set of words. It is text that a generator adds and a person does not need. A word is never forbidden by itself. A text is slop when its form matches a style in the table below. Do not change a correct, plain text only because it contains a word that slop text also uses.
+
+### Forbidden styles
+
+| Style | Test | Slop | Plain |
+|---|---|---|---|
+| Explanation nobody asked for | The text gives a reason, a purpose or a justification that the reader does not need to act. | "COALESCE because NULLs are distinct in a unique index, and ..." | "COALESCE maps NULL to 0 for the unique index." or no comment |
+| History and comparison | The text compares the current state with an earlier state of the project or with a rejected option. | "The cap is now per user rather than per process." | "The cap is per user." |
+| Contrast pairs | The text states what a thing is not, next to what it is. | "says the file is missing, not that the table was empty" | "says that the file is missing" |
+| Hedging | The text weakens a fact that the code or the data settles. | "This should usually return the newest run." | "This returns the newest run." |
+| Vague amounts | The text gives a size or a count without the number, when the number is known. | "several devices" | "3 devices" |
+| Selling | The text praises the product or the code. | "a robust, seamless trace engine" | "the trace engine" |
+| Narration | The text describes what the reader sees, what the code obviously does, or what the text is about to say. | "Here we loop over the devices." | no comment |
+| Talk to the reader | The text speaks to the reader or to the owner as a person, or uses chat phrases. | "Note that you can ...", "Great question" | the fact alone |
+| Summary and padding | The text repeats what the text, the page or the code already says, or opens with an introduction. | "In short, the loader writes the run." | no text |
+| Colon chains | One sentence joins 2 or more clauses with colons or semicolons. | "The load landed; what it landed can still be less than the whole device." | "The load can write less than the whole device." |
+| Explanation after a colon | A short claim is followed by a colon and its explanation. | "No QOS body means the profile read was refused: the ..." | "The profile read was refused if the QOS body is missing." |
+| Verbs as metaphors | Data or code is said to speak, carry or name. | "the row carries the filter", "the leg says so" | "the row holds the filter", "the leg has a note" |
+| Compressed fragments | The sentence has no subject, no verb or no articles, so the reader must decode it. | "Not blocked, and not a clean pass: the engine could not decide." | "The engine could not decide the gate." |
+| Stacked qualifiers | The noun has 2 or more qualifiers that the reader does not need. | "a confirmed, undecided-free permit, which a later reply ..." | "a permit" |
+| Riddle wording | The text uses an unusual phrase where a plain phrase exists. | "past the sample the row says how many" | "after the sample, the row holds the count" |
+| Self-reference | The text refers to itself or to its own function in place of the name. | "this function's own parameter" | "the parameter `detail`" |
+| Rhetorical forms | The text uses a question, a group of 3 for rhythm, or a fragment for effect. | "Fast, safe, and simple." | no text |
+| Decoration | The text uses emoji, glyphs such as `·`, `→`, `✓` and `•`, an em dash, an exclamation mark, bold in running text, or a heading or a table for 2 items. | "Trace →" | "Trace flow" |
+
+Write full, plain sentences: a subject, a verb and an object, with articles. One fact per sentence.
+
+### Product text
+
+- A name is the bare name of the thing: "Network functions", "Forwarding table", "Next hops". It has no qualifier, no format, no unit and no second part after a comma or a colon. A unit goes in the `unit` field of a column or a setting.
+- A label names a thing or a state in a few words: "not known", "no reply", "no device group". A button names its action: "Add credential", "Delete core-01".
+- A label, a hint, a note or a description is not a sentence and has no full stop. A `title` holds one short phrase at most.
+- No text explains a section, or why a thing is absent, disabled or not used. A control that does nothing for the record is not shown.
+- No text repeats what the page already shows. A count or a summary box that a person does not act on is not shown.
+- A value shows as the value itself, in full, not as "varies", "mixed" or a cut text with an ellipsis. A value with no information shows the hatch with "not available". A value that the twin cannot know shows the hatch with "not known".
+- No key hints, tips, onboarding text or legends that explain the controls.
+- Sentence case, present tense.
+
+### Docs, design notes, STATUS.md and the README
+
+- State the current design and the current facts only. No plan written as a fact.
+- No introduction, no overview that restates the headings, no closing summary, no sales section, no next steps that nobody asked for.
+
+### Code comments, docstrings and test names
+
+- A comment states what the code does or holds, in the terms of the code. If the code already shows it, write no comment.
+- A comment keeps a fact that the code depends on: a bound, an order, a format or a constraint.
+
+### Commit messages, pull request texts and answers to the owner
+
+- A commit message names the change: "galaxy-scene: the refusal of an arc with the same ends".
+- A pull request text lists the changes and the checks.
+- An answer to the owner leads with the result, and then gives only the facts that the owner needs. It does not praise, apologize, restate the question or end with an offer that nobody needs. It does not claim a result that no check confirmed.
+- Options go to the owner only when the owner must decide.
+
+Before a change is done, read each new or changed text of the change against this section. Section 7.1 "Forbidden prose" of `../rsim-project/design/ui-design-language.md` holds the same rule.
+
+## Where to build
+
+- Build, test and run on the laptop and in CI.
+- Before a release build, do a check of the free space with `df -h`. If less than 20 GB is free, stop and tell the owner.
+- A new dependency needs the approval of the owner. Name the crate, its version and its source.
+
+## Commands
+
+| Task | Command |
+|---|---|
+| Build | `cargo build --workspace` |
+| All tests | `cargo test --workspace` |
+| One test file | `cargo test -p galaxy-scene --test session` |
+| Frame of the example site | `cargo run -p galaxy-render --example site -- <file.png> [look values]` |
+| Times of the target estate | `cargo run --release -p galaxy-render --example estate` |
+| Desktop window | `cargo run -p galaxy-native -- [--sources <file.json>] [--ops <file.jsonl>] [--log <file.jsonl>] [--mcp]` |
+| Frame of an operation file | `cargo run -p galaxy-native -- [--sources <file.json>] --ops <file.jsonl> --png <file.png> [--select <name>]` |
+| Lint | `cargo clippy --workspace --all-targets` |
+| Format check | `cargo fmt --all --check` |
+
+## Rules for code
+
+### Principles
+
+| Principle | Rule |
+|---|---|
+| Agent as operator | Each change of a scene is an operation. The engine has no other way to change a scene. |
+| Deterministic | Do not use clocks or randomness. The same operation log gives the same scene and the same frames. Do not let a result depend on the iteration order of an unordered collection. |
+| Values from the handle | An object binds to a handle of the host program. The agent sets the form and the relations of an object. Each number, each label, and each size and colour of a quantity comes from the data of the handle. |
+| Relations, no coordinates | An operation states relations between objects. The engine calculates each position. |
+| Refusals for a model | A refused operation changes nothing, and it gives its cause and the valid values. |
+
+### Design constraints
+
+- The engine is Rust. `wgpu` is its lowest layer: the engine has no Vulkan, Metal or DirectX code of its own.
+- The shaders are WGSL.
+- The desktop window is the first target. The browser is the second target, through WebAssembly and WebGPU only, from the same crates.
+- The engine has no dependency on rsim and knows no rsim type. A handle is opaque: the engine compares it and does not read it.
+- The engine makes no model call. `galaxy-scene` and `galaxy-render` have no network code and no async runtime. The client of a source is in `galaxy-native`. The host program gives the agent.
+- `galaxy-scene` has no GPU dependency.
+- Each GitHub action is pinned by its commit SHA, with the release tag as a comment.
+
+## Work order
+
+- If the work needs a decision that the design note does not have, ask the owner.
+- Do not make an open point of the design note silently; ask the owner.
+
+## Architecture
+
+`galaxy-scene` has no GPU dependency and no dependency outside the standard library.
+
+- `world.rs` holds `Relations`. A node has a kind, a parent and the data of the source by field name. A flow has the nodes of its path, an optional `Outcome` and the data of the source by field name. An `Outcome` has the kind deliver, exit, drop, loop or unknown, and a reason. An empty reason is no reason.
+- `RuleSet` has a `Rule` for each kind. A rule has an `Arrangement` (row, stack, grid or layers), a `Shape`, the size of a node with no child, a gap and a margin. A shape is 1 of the built-in shape names box, cylinder, router, switch, firewall, device, access-point, workstation, cloud, layer3-switch, server, laptop and load-balancer, or a defined shape by its index in `Library::shapes`. `mesh::forms` in galaxy-render gives the meshes of a shape.
+- The arrangement layers puts the children in columns along x by their step on the flows. It orders the children of each column to reduce the crossings of the flows. A flow past a column has a waypoint in it. 12 rounds of sweeps by the mean place of the neighbours, each with exchanges of adjacent children that remove crossings, keep the order with the fewest crossings. With more than 1000 links between adjacent columns, the columns keep the order of the children.
+- `World::expand` sizes each node from its children, places each node in its parent, and routes each flow as a polyline of segments parallel to 1 axis. A line goes out of each node through a door on its surface into the corridor of its parent, and along the corridor of the lowest common ancestor. The corridor is the margin on the side where the children leave: up for row, grid and layers, +x for stack. A router, a switch, a layer-3 switch, an access point or a load balancer with no child, in a parent whose children leave upward, has its door a quarter of the gap of the parent outside its side toward the other node on x. From that door, each lane of the line rises beside the node.
+- Between 2 adjacent children of a parent with the arrangement row, 1 or both with children that leave upward, a line goes out of the first along x at the height of its corridor or of its centre. It goes in the middle of the gap between them along y and z, and along x into the second at the height of its corridor or of its centre.
+- A flow from a child of a parent with the arrangement layers to a child in a later column goes as a wire at a quarter of the height of the lowest child above its bottom. The wire goes along x to the gap before each later column. In each gap it goes along z to the free stretch of the next column nearest to the line. The free stretch is the line itself when a quarter of the gap or more lies between it and each node of the column, the middle between 2 nodes of the column, or half a gap before its first or after its last node. In the gap before the column of the target, the wire goes along z to the target.
+- `World::lanes` gives the lines of any paths in lanes, and `World::expand` gives each flow its line from it. Segments of 2 or more lines on 1 line along 1 axis, each in 1 step of its path, with a common stretch of their extent in their lanes, are 1 bundle. Each segment has its own lane in the bundle. The extent of a segment in its lane reaches to the lane of the segment before and after it on another axis. The bundles grow in up to 16 rounds until no 2 bundles on 1 line have a common stretch.
+- The lanes of a bundle lie side by side around the line through the centres: along z for a segment along x, along x for a segment along z, and along x and -z for a segment along y. In a node with the arrangement stack, the lanes of a segment along y from its corridor to its face lie along x. The lanes of the segments out of its children lie along y. The order across the bundle follows the side from which each line comes at the low end of the bundle, then the lane of the run before the low end, then the side to which it goes at the high end, then the lane of the run after the high end.
+- 2 adjacent lanes of a bundle are 0.45 apart, or less so that the outermost lane stays within 0.8 of the room of each segment of the bundle. The outermost lane also stays within 0.8 of half the distance to a parallel segment beside it in the direction of its lanes with a common stretch. The room is the distance to the faces of the node that the segment enters or leaves, also for the segment from the end of a wire to the centre of its node. The room is half of the gap for a segment in a gap, the margin for a segment in a corridor above the children, and half of the margin for a segment in a corridor beside them.
+- Between 2 segments in 2 lanes, the line goes across on the axis of neither segment. Between a segment along y and a segment along x or z, the line changes lane at the corner. It changes lane in the segment along y or in the segment along x or z next to the corner, at 1/2, 1/4 or 3/4 of the segment from the corner, where that removes a common stretch of the line with another line, in up to 16 rounds over the lines. A run along y of 1 segment with a lane change on 1 axis at each end changes lane 1 time, from the lane of the run before it to the lane of the run after it. Between 2 runs on 1 axis, the line goes across first on an axis on which the lanes of the run before do not lie, and last on an axis on which the lanes of the run after do not lie.
+- Lines have no common stretch outside the nodes with no child on both of their paths. `FlowLine::gaps` holds the distance from each segment of a line to an adjacent lane, 0.45 for a segment with no adjacent lane. `FlowLine::spacing` is the smallest of them. The world keeps the lines of the last paths of `World::lanes` and gives them again for the same paths. A coordinate of a point of a line within 1e-9 of the coordinate of the point before has its value, and no point follows itself.
+- `World::broken` gives the broken rules: a child outside its parent, 2 nodes of the same parent that intersect, and a flow line through a node that is not on its path and contains no node of its path.
+- `World::describe` gives the world text. It has one line for each node in name order, then one line for each flow with its outcome, its reason and the data of the source. Then it has one line for each part of each defined shape, starting with `shape:` and its name, and one line for each material with colours, starting with `material:` and its name. `World::library` gives the library of the style of the world. A node has an index in the order of the relations. `World::node`, `rule`, `children`, `parent`, `top` and `line` work on indexes.
+- `style.rs` holds `Look` (projection, space, light, lines and scheme) and `Style`, a rule set with a look and a library. `Style::default` has rules for the kinds site, location, room, rack, device, router, switch, l3-switch, firewall, access-point, workstation, server, laptop, load-balancer, network, function, endpoint and application. The kinds device, router, switch, firewall, access-point, workstation, server, laptop and load-balancer have the shape of their name. The kind l3-switch has the layer3-switch, the kind network the cloud and the kind endpoint the workstation. The rack has the arrangement stack with a gap of 0.1 and a margin of 1.
+- `library.rs` holds `Library`, the defined shapes and the materials. A `DefinedShape` has a name, 1 to 256 parts and the indexes of the parts of its symbol. A `Part` has a `Solid`, its centre and its size inside the unit box of the shape from -0.5 to 0.5, an `Axis` of the cylinder or the prism (y by default), a material by name and whether it has outline edges. A solid is a box, a cylinder, or the prism of a simple polygon of 3 to 64 points in the unit square of the part, with u and v on the 2 other axes in the order x, y, z. A `Material` has a name and `Colours` (light and dark sRGB and lit) or none. The library starts with the built-in materials body, symbol, brick, flame, mortar and flame-core with no colours, and holds 64 materials at most. A redefined shape keeps its index.
+- `model.rs` holds `Change` (add node, add flow, set rule, set look, define shape, set material, clear, load and load view) and `Model`, the relations and the style with the log of the changes. `apply` refuses a change with its cause and changes nothing. It refuses the kinds root and default. A set rule names a built-in or a defined shape. A set rule with no shape keeps the shape of the rule of its target. A define shape refuses a built-in shape name, a part with a size of 0 or less, a part outside the unit box with a tolerance of 1e-9, a part of an unknown material, a prism polygon that is not simple or outside the unit square, a symbol index with no part, and a symbol that holds each part. A set material adds a material of a new name. A load replaces the nodes and the flows with the relations of its `Load` as 1 entry of the log. It keeps the rule set, the look, the defined shapes and the materials. A load view, the arguments of `load_view` with no read document, is refused. `undo` gives the model of the log with no last change, and `replay` gives the model of a log.
+- `wire.rs` holds the wire form: `TOOLS`, the name, the description and the JSON schema of each change, `decode` from a name and JSON arguments, and `encode`. `decode` refuses a shape or material name outside the name rule, a solid, an axis or a colour outside its valid values, and points of a box or a cylinder. It refuses an outcome kind outside `OutcomeKind::NAMES` with the valid names, and an empty name, kind or arrangement with its valid values. It refuses a field name outside the name rule, more than 64 fields and a text value of a field outside 1 to 1024 characters. The schema of `load_view` has `source` and `query`. `decode` of `load_view` gives a load view with the source, the query and the optional `sha256` of a log entry. It refuses a source outside the name rule, a query above 8192 characters and a `sha256` other than 64 lowercase hex digits. `encode` of a load gives `load_view` with the source, the query and the `sha256` of its bytes.
+- `json.rs` holds `Json`, the JSON reader and writer. The reader refuses an object with a member name 2 times, a `\u` escape with no 4 hex digits, a number outside the grammar of RFC 8259 and a number outside the range of a double. It finds a member name 2 times in an object of n members in O(n log n).
+- `document.rs` holds the reader of the relations format. `read` gives the relations and the `Answer` of a document or of a stream text with all its pages joined in order, with its `Framing`, or its first 20 refusals in the order of the text. Each refusal is a `LoadRefusal` with the text `<at> <member>: <code>, valid: <valid>` and the refused value apart from the text. It checks the codes json, format, version, missing, type, value, size, exists, no_node, no_flow, short_path, repeat, unit, window, header, line, no_end, abort and count, the limits of the format and the versions in `VERSIONS`.
+- The reader ignores a member or a line that version 0.1 does not define. `Answer::ignored` names each by the name rule, at most 64 in name order: a member of a record by its class, as `flow.priority`, a member of the document or of the header by its name, and a line as `line rule`. `Answer::not_shown` names the members that the engine does not show, in the order of the table of the engine operations of the format.
+- `Framing` gives the form of a text. A `.json` file is a document, and a `.jsonl` file a stream. Another text is a stream when its first line, with a byte order mark ignored, is a JSON object with `header` or with 1 member other than `format`. It is also a stream when the whole text is not 1 JSON value, it ends in LF and a line of it is a JSON object with 1 member other than `format`. Another text is a document.
+- The reader checks `format` and `version` of a document first, then `source`, `partial` and the record arrays in the order of the text, the arrays in the order nodes, links and flows. The refusal of a count unit with no `source.window` comes after the refusals of `source`. After refusal 20, the reader reads on only for the unit of the first magnitude. A stream with no LF after its last line is refused with the code line. A `next` line is valid as the last line of a page of the MCP transport and in a kept text. A page with a page after it that does not end in a line break is refused at the line in which it ends. A line of a kind outside header, node, link, flow, next, abort and end is refused with the member `text`. An `abort` line is refused with the code abort and its reason, or `no abort line` with no valid reason.
+- A node gets its text, number and boolean fields as text. A flow gets its path, its outcome and its fields. `Load::read` gives the `Load` of a source and a query: the relations, the answer and the SHA-256 hash of the bytes. `sha256.rs` holds SHA-256 of FIPS 180-4.
+- `id.rs`, `primitive.rs`, `scene.rs`, `session.rs` and `host.rs` hold the scene of the primitives globe, building, arc and label with its operations, its log and its set objects.
+- The tests are in `crates/galaxy-scene/tests/`: `world.rs`, `model.rs`, `document.rs` and `session.rs`.
+
+`galaxy-render` draws a `View` (a world, a look, a selection and a `Camera`) on `wgpu`. `Renderer::new` opens the GPU adapter for images, and `Renderer::with_device` builds the pipelines on a given device for a given target format.
+
+- `src/mesh.rs` holds the mesh registry. `Mesh` names each built-in mesh and each mesh of a defined shape. `Registry` holds the vertices of the built-in meshes and of 3 meshes for each defined shape of a `Library` in 1 vertex buffer, with the range of each mesh. `forms` gives the meshes of a `Shape` in a library: with its symbol, without its symbol and its edges, with the size of the smallest part of its symbol. The renderer keeps the registry of the last library. It builds the registry again when the defined shapes or the material names of the library of the world differ.
+- The meshes of a defined shape are its parts in its unit box, each in its material: a box, a cylinder along the axis of the part with an elliptic base, or the polygon of a prism extruded along the axis of the part. The mesh without its symbol has no part of its symbol. The edges are the edges of each part with edges outside its symbol: the 12 edges of a box, the rims of a cylinder, and the outline of both caps of a prism with an edge along its axis at each corner that turns by 20 degrees or more. The size of the symbol of a defined shape is the smallest middle side of the parts of its symbol.
+- Each mesh lies in the unit box from -0.5 to 0.5 and is built from prisms of polygons, with caps by ear clipping, and from bars along edges. A vertex has a position, a normal, a shift as a multiple of the edge thickness, its position in the box of its part, the size of that box, its index in the material table, a bevel, a `Fit` and an anchor. The material table starts with body, symbol, brick, flame, mortar and flame core, then the materials that set_material adds. The box of the part of a symbol vertex with a fit is the region of its symbol.
+- The router is a puck: a stadium that fills its box on x and z, the circle of the smaller of its width and depth with each half at its end of the longer side. On its top it has 4 arrows along x and z, 2 inward on z and 2 outward on x, in the circle of the reference size. On its curved front it has the same arrows along x and y in strips that follow the stadium.
+- The switch is a slab with 4 parallel arrows along x on its top, alternating right and left. On its front it has 2 parallel arrows along x, the upper one to the right and the lower one to the left, 0.15 of the height of the face or more from its top and its bottom.
+- The layer-3 switch is the slab with 4 arrows in a cross on its top and on its front, each pointing outward.
+- The firewall is a wall of bricks in 4 courses on a mortar core, 0.55 of the height and 1/3 of the depth of its box. A flame of 3 pointed tongues and a pointed core stands above the wall to the top of its box. The brick block is 7 courses of bricks on a mortar core through the whole box.
+- The access point is a low slab with rounded corners of the same radius on x and z. On its top and on its front it has a dot with 2 arcs of a radio wave on each side of it on x.
+- The load balancer is a slab with cut corners with 1 line that splits into 3 arrows on its top. Its front has the same symbol with the aspect of the top symbol, 0.62 of the height of the box for 1 unit of the top symbol. Its half shaft, its half head and its head length are 0.07, 0.13 and 0.19 units of the top symbol.
+- The server is an upright tower with the lines of 5 drive bays and a button on its front. The laptop is a thin base with 4 rows of a keyboard and a touchpad, and a screen panel tilted back from its back edge with its screen toward +z. The workstation is a monitor on a neck and a foot with its screen toward +z, and a tower to its left and behind it with a slot and a button. The cloud is an upright outline of 4 lobes on a flat base, through the depth of its box. The device, the box and the cylinder are plain.
+- A front symbol is 0.006 of the depth of the box deep, on a front face 0.006 inside the box. `reference` gives the reference size of the symbol of a node. For the router, the switch, the layer-3 switch, the access point, the load balancer and the firewall, it is the size of the box of its mesh, the size of the default rule of each kind of the default style with that shape. For a defined shape, it is the size of the rule of the kind of the node in the rule set of the world, from `World::rule`.
+- The symbol on the top and on the front of these 5 shapes, the flame of the firewall, and each part of the symbol of a defined shape on the face across the axis of its smallest side, have a fit. On its face, the region of the symbol is the box of its vertices around its anchor with 0.1 of the unit box on each side. The region keeps the aspect of the reference size and fills the face on its shorter side, at most up to the scale that fits the whole reference size in the face on 1 axis. Across the face the symbol scales by the same factor up to the size of the node. `region` gives the region and `fitted` the scale.
+- The body of the router and its edges have the stadium fit. The slab of the access point and its edges have the round fit: on x and z it keeps the aspect of the reference size around each corner of the slab, and on y it has the height of the node. The anchor of a top symbol is the middle of the top of the body, and of a front symbol the middle of the front symbol at the front of the body. The anchor of the flame is the middle of its base. The anchor of a defined shape is the middle of the box of the parts of its symbol on that face, on its side toward the middle of the unit box. The front symbol of the router fits the circle of the stadium and keeps its distance to the curve of the stadium.
+- The arrowheads of the flow lines are 6 meshes, 1 for each direction along an axis: a flat dart on x and z for a direction on x or z, and 2 crossed darts for a direction on y.
+- The pipelines of `src/shader.wgsl` draw each mesh once for each instance record. The record holds its centre, its size, its edge thickness, the colour of the body slot, its pick value and the reference size of its symbol. The reference size is negative on y for a node with no top symbol and on z for a node with no front symbol. `vertex_main` places a vertex with a fit by the reference size, a vertex of the stadium on the stadium of the node, and a vertex of a symbol that the node does not show on the centre of the node. The material table of the frame holds 64 entries. It gives the colour of each other material in the scheme and whether it is lit, the palette colour for a built-in material with no colours. A body with colours gives the colour of the body slot of each node that is not open.
+- `casing_main` moves each corner of a casing of a flow line away from the eye by the distance in the instance record. `fragment_main` gives the lit colour with the light of the sky and the ground, the sun, a darker band along the edges, a darker band near the floor and the highlight of the sun. On a cylinder and a stadium the band runs along the rims. `shadow_main` gives the soft shadow of a node on its floor with the opacity of the scheme, 1.7 times the width and the depth of the node. `glow_main` gives the glow around a flow line. `shell_main` gives an edge of an open node at the depth where the line of sight leaves its box above its floor plate. `pick_main` gives the pick value.
+- Each frame, each node gets a detail state from its size on the screen. Below 4 pixels it is not drawn. A node with children below 160 pixels is closed. From 160 pixels it is open: its edges, its floor plate and its children. An open node of the cloud shape has the upright cloud at the back of its floor, as wide as the node and 0.6 of its width high, at most to the top of its box. The edges of an open node are drawn after the nodes and the flow lines with no depth write, at the depth where the line of sight leaves its box above its floor plate. These edges are behind each node and line in the box and in front of each node behind it.
+- A node that is not open is a box with its edges from 4 pixels, and the mesh of its shape with no symbol and its edges from 8 pixels. It has the mesh with its symbols while the smallest part of its top symbol is 4 pixels or more or the stroke of its front symbol 1.8 pixels or more at its fitted size. A top symbol below 4 pixels and a front symbol below a stroke of 1.8 pixels are not drawn. The rule is the same for each node of a shape, in a stack and alone. The smallest part of the top symbol of the access point is its dot. The stroke of the front symbol is 0.1 of the height of the box for the router, 0.12 for the switch, 0.11 for the layer-3 switch and the access point, and 0.087 for the load balancer.
+- A node below the next child of its parent, where that child lies on its top and covers a part of it as in a stack, has no top symbol. The body of a router, a switch, a layer-3 switch, an access point or a load balancer in that place reaches to the top of its box. A firewall in that place is the brick block with the edges of its box in the dark brick colour.
+- A node outside the view is not drawn, and a segment, a dot, an arrowhead or a stop mark of a flow line outside the view is not drawn. Each flow goes through the nearest drawn ancestor of each node of its path. Where the spacing of its line is below 2 pixels, flows with the same drawn path are 1 trunk. When a drawn path differs from the path of its flow, or a flow is in a trunk, the lines of the frame are the lanes of the drawn paths from `World::lanes`.
+- An edge is 1 to 1.5 pixels, and an edge of the selected node 2.5 to 3 pixels. A flow line has 1 thickness: 0.07, at most 0.4 of the smallest lane spacing of the line, and 2 pixels or more on each piece of its segments. The part of a line inside a node of its path that is not open is not drawn. A segment of a flow line is cut at its point nearest to the eye. Each part is halved up to 6 times while the length of a pixel at one end is more than 1.5 times the length at the other end.
+- A flow line has the colour of its outcome: deliver, exit and no outcome in teal and green in turn, in the order of the flows, drop in red, loop in amber and unknown in grey. Each colour has a value for the light and the dark scheme. A flow line starts with a dot where it leaves its first node. The dot is 3.2 line thicknesses wide, at most 0.8 of the lane spacing of the first segment, and at least the thickness of the line with 2 pixels on each side.
+- A flow line with a point that is not finite is not drawn, and the home view leaves out the points that are not finite.
+- A flow line has arrowheads in its colour toward the direction of travel every 160 pixels along the line, at most 1024 on the part in the view of 1 visible stretch. The first is at 0.3, 0.55 or 0.8 of that distance from the start for the flows 0, 1 and 2 of each 3. Each is on a visible stretch of a straight run of segments, 1.5 arrowhead lengths or more from each end of the stretch. It keeps clear of the crossings with other lines while the frame has 256 lines or fewer. A leg between 2 drawn nodes with no arrowhead gets 1 arrowhead in the middle of its longest visible stretch. On a stretch shorter than 4 arrowhead lengths, the arrowhead is 1.5 of its lengths from each end and at least 0.6 of the full length. The line ends in an arrowhead 0.8 line thicknesses in front of the surface of its last node, shorter on a shorter last segment outside the node.
+- The line of a dropped flow ends in a stop mark across the line, from 1 to 2.6 line thicknesses in front of the surface of its last node. The stop mark is in the drop colour and no wider than 1.1 times the lane spacing of its segment. The width of an arrowhead keeps to the lane spacing of its segment.
+- Each segment, dot, arrowhead and stop mark of a flow line has a casing, 2 pixels wider on each side in the ground colour, and 2.5 casing widths behind the mark from the eye. A segment of a lane change, shorter than 0.9 between 2 segments on other axes, has no casing in the ground colour. The segments of a selected flow have a casing 3.5 pixels wider on each side in the selection colour. Its dot, arrowheads and stop mark have none. A line in front of another line hides the other line on both of its sides.
+- `Camera::home` gives the home view for the ratio of the width to the height of the frame, from the direction (0.38, 1.4, 1.4) in perspective and (1, 1, 1) in isometric. The corners of the nodes with no parent and the points of the flow lines are in the middle, filling 0.94 of the height or of the width. The look with ground has a floor grid, drawn first with no depth.
+- The edges of a cylinder and of a router are a ring at the base and around the top of the body and 2 upright lines where the view touches its side. The edges of a firewall are the edges of its wall in a dark brick colour. The edges of an access point and of a load balancer are the rims of its slab and its upright corners. The edges of a server are the edges of its tower, and the edges of a laptop the edges of its base and its screen panel. The edges of a workstation are the edges of its monitor and its tower. The edges of a cloud are its outline on its front and back faces. A selected node has its edges in the selection colour.
+- The panel of the selection holds the lines of `View::details`. A line with no name is a title in Inter at the weight 600. Each other line has its name in Inter at 400 and its value in JetBrains Mono at 400, at 15 pixels to the em. `src/text.rs` rasterizes each glyph on its first use with `ab_glyph` into a glyph atlas, and draws the text in a pass over the resolved frame. The fonts are in `crates/galaxy-render/fonts/` with their licence texts. The panel is in the corner of the frame whose rectangle covers the least area of the nodes with no child, the flow lines and the compass. On equal areas the order is top right, bottom right, top left and bottom left. The compass in the bottom left corner turns with the camera. Its arm in the text colour points to -z.
+- `Renderer::draw` draws into a texture view, `Renderer::render` into an `Image`, `Renderer::pick` gives the `Selection` at a pixel, and `Renderer::count` gives the instance count of a frame. `Image::write_png` writes the PNG file.
+- The tests are in `crates/galaxy-render/tests/`: `mesh.rs` for the meshes, and `render.rs` for the frames. On a system with no GPU adapter, the tests of the frames print the cause and pass. The example `site` writes the frame of a site in a look, and the example `estate` gives the times of an estate of 60,500 nodes and 1,000 flows.
+
+`galaxy-native` is the viewport. `src/lib.rs` holds its modules and `src/main.rs` the program.
+
+- `viewer.rs` holds `Viewer`, a model with its world, the selection and the sources, and the tools `undo`, `describe`, `frame` and `sources`. `Viewer::call` answers each tool. It answers `define_shape` and `set_material` with their lines of the world text, and `load_view` with the answer of the load. `Viewer::apply_ops` applies the lines of an operation file. `Viewer::log` gives the operation log as the lines of an operation file. A `Reply` holds the lines for the standard error apart from its text. `Viewer::details` gives the lines of the panel of the selection: for a flow its outcome, its reason, the data of the source and its path.
+- `sources.rs` holds `Sources`, the configuration of `--sources`. It holds each source by name with its description and its transport: mcp (`command` and `env`), http (`url` and `credential`) or file (`path`). It checks each member with refusals of the form `<at> <member>: <code>, valid: <valid>`, and holds the credential references `env:<name>` and `file:<path>`. A relative path, a relative `file:` path and the command resolve in the directory of the configuration file.
+- `fetch.rs` holds the transports. The MCP client starts the command of the source in that directory with no standard error. A program name with no directory is the file of that name in that directory, or the program of that name on `PATH`. The command gets the variables of its `env`. The variables that the `env:` references of the other sources name are removed from its environment.
+- The client sends and reads MCP JSON-RPC lines: `initialize`, `notifications/initialized`, and `tools/call` of `galaxy_relations` with `query`, `versions` and the `cursor` of each page after the first. It answers a `ping` of the source with an empty result and each other request of the source with the error -32601. It joins the pages in order as sent with the byte offset of the end of each page, and waits 60 s at most for each answer. It refuses an `isError` result and a repeated cursor with the code source. It refuses with the code size a page above 4,194,304 bytes, the lines of a class above the limit of the class, the joined bytes above the header, the records of the limits and the end line of 1,048,577 bytes each, and a cursor outside 1 to 1024 characters at its line.
+- The file transport reads `<query>.json` as a document, then `<query>.jsonl` as a stream, and refuses another query with the names of the files. It refuses a `.json` file above 67,108,864 bytes and a `.jsonl` file above the limit of the joined pages with the code size before it reads the file. An http source refuses with the code source and the valid values `mcp, file` before its credential is read. A text of the source that holds a credential of the source, checked before the text is cut to 1024 characters, is withheld. A document that holds a credential in its bytes, in a JSON string after its escapes are decoded or in a text that the load shows is refused.
+- `load.rs` holds `load::read`. A call of `load_view` takes `source` and `query`. It refuses `sha256`, a missing argument, and an argument of another type or value at `load` with the codes missing, type and value. It refuses a source name outside the name rule with no_source. It reads the answer of the source with `Load::read` and keeps its bytes as `galaxy-documents/<sha256>`. A line of an operation file with `sha256` replays the kept file of that hash in `galaxy-documents` next to the configuration file for a source of the configuration, checked against the hash, with no request. A refused load gives its refusals, the codes no_source, source and credential at `load`, and the place and the refused value of each refusal for the standard error.
+- `mcp.rs` serves the tools on MCP over JSON-RPC lines. `main.rs` holds the window on `winit` with the camera and the selection, and the options. `--sources` reads the configuration. `--ops` applies a file of JSON lines. `--png` writes the frame with no window. `--select` selects a node or a flow. `--log` writes the operation log as an operation file after the operation file and after each change. `--mcp` serves the tools. With `--mcp` and a window, the thread of the MCP server reads a load and the window applies it.
+- In the window, a drag turns the camera around its target, the wheel moves it nearer or farther, and Home gives the home view. A click selects the object below the pointer and shows its panel with the data of the source.
+- `src/bin/galaxy-fixture.rs` is the MCP source of the tests of the load. It serves `galaxy_relations` on MCP with the documents of a directory and a stream in pages. The tests are in `crates/galaxy-native/tests/`: `load.rs` and `credential.rs`, with the documents of the fixture in `tests/documents/`. `.mcp.json` registers the viewport as the MCP server `galaxy`. `examples/packet-flow.jsonl` is an operation file.
+
+CI is in `.github/workflows/ci.yml`. For each pull request and each push to `main`, it runs the format check, clippy and the tests on Linux `amd64`. It does not run for a change of only Markdown files.
+
+## Status
+
+@STATUS.md

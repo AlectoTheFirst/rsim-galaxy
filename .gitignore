@@ -1,0 +1,7 @@
+# Local tool state
+/.claude/
+/.code-review-graph/
+
+# Rust build output
+/target/
+.DS_Store
