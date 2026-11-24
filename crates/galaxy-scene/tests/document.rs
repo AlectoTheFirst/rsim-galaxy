@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use galaxy_scene::document::{self, REFUSALS};
+use galaxy_scene::document::{self, RECORD_BYTES, REFUSALS};
 use galaxy_scene::sha256::{self, Sha256};
 use galaxy_scene::wire;
 use galaxy_scene::{Change, ChangeRefusal, Code, Framing, Json, Load, LoadRefusal, Model, Style};
@@ -511,6 +511,61 @@ fn a_stream_of_mcp_pages_reads_its_next_lines() {
         refusals(&after_end),
         ["line 3 node: no_end, valid: end as the last line"]
     );
+}
+
+#[test]
+fn a_stream_of_pages_checks_each_page_end_in_any_order() {
+    let lines = [
+        HEADER,
+        r#"{"node":{"id":"a","kind":"site"}}"#,
+        r#"{"next":{"cursor":"page-2"}}"#,
+        r#"{"node":{"id":"b","kind":"site"}}"#,
+        r#"{"next":{"cursor":"page-3"}}"#,
+        r#"{"end":{"nodes":2,"links":0,"flows":0}}"#,
+    ];
+    let text = lines.join("\n") + "\n";
+    let after = |count: usize| {
+        lines[..count]
+            .iter()
+            .map(|line| line.len() + 1)
+            .sum::<usize>()
+    };
+    let read = |ends: &[usize]| {
+        Load::read("inventory", "q", text.as_bytes(), Framing::Pages(ends))
+            .map(|load| load.relations().nodes().len())
+            .map_err(|refusals| refusals.iter().map(ToString::to_string).collect::<Vec<_>>())
+    };
+    assert_eq!(read(&[after(3), after(5), text.len()]), Ok(2));
+    let inside = after(3) + 4;
+    let refused = Err(vec![
+        "line 4 text: line, valid: a page that ends in a line break".to_owned(),
+        "line 5 next: line, valid: next as the last line of a page".to_owned(),
+    ]);
+    assert_eq!(read(&[after(3), inside, text.len()]), refused);
+    assert_eq!(read(&[text.len(), inside, after(3), after(3)]), refused);
+}
+
+#[test]
+fn a_line_above_the_record_limit_after_the_check_stops_gives_no_unit() {
+    let bad: Vec<String> = (0..REFUSALS)
+        .map(|index| format!(r#"{{"node":{{"id":"n{index}","kind":"root"}}}}"#))
+        .collect();
+    let flow = |padding: usize| {
+        format!(
+            r#"{{"flow":{{"id":"f","path":["a","b"],"magnitude":{{"value":1,"unit":"byte"}}}}}}{}"#,
+            " ".repeat(padding)
+        )
+    };
+    let refused = |last: &str| {
+        let mut lines: Vec<&str> = bad.iter().map(String::as_str).collect();
+        lines.push(last);
+        refusals(&stream(&lines))
+    };
+    let window = "line 1 source.window: window, valid: from and to, from not after to";
+    assert_eq!(refused(&flow(0))[0], window);
+    let long = flow(0);
+    let long = flow(RECORD_BYTES + 1 - long.len());
+    assert!(!refused(&long).iter().any(|text| text == window));
 }
 
 #[test]

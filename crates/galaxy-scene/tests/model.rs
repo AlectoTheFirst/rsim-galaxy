@@ -1,7 +1,7 @@
 use galaxy_scene::wire::{self, TOOLS, WireRefusal};
 use galaxy_scene::{
-    Arrangement, Axis, Change, ChangeRefusal, Colours, Json, Library, Lines, Look, Material, Model,
-    ObjectId, Outcome, OutcomeKind, Part, RuleTarget, Scheme, Shape, Solid, Style,
+    Arrangement, Axis, Change, ChangeRefusal, Colours, Framing, Json, Library, Lines, Load, Look,
+    Material, Model, ObjectId, Outcome, OutcomeKind, Part, RuleTarget, Scheme, Shape, Solid, Style,
 };
 
 fn id(name: &str) -> ObjectId {
@@ -943,4 +943,94 @@ fn rule_of_a_node_is_the_rule_of_its_kind_that_the_agent_set() {
     assert_eq!(world.rule(client).shape, Shape::Workstation);
     let site = world.index(&id("site-a")).unwrap();
     assert_eq!(world.rule(site), &Style::default().rules.kinds["site"]);
+}
+
+/// The shape `name` of `count` prism parts of a regular polygon of 64 points.
+fn polygons(name: &str, count: usize) -> Change {
+    let points: Vec<[f64; 2]> = (0..64)
+        .map(|index| {
+            let angle = index as f64 * std::f64::consts::TAU / 64.0;
+            [0.5 * angle.cos(), 0.5 * angle.sin()]
+        })
+        .collect();
+    Change::DefineShape {
+        name: name.to_owned(),
+        parts: vec![part(Solid::Prism(points), [0.0; 3], [1.0; 3], "body"); count],
+        symbol: Vec::new(),
+    }
+}
+
+#[test]
+fn define_shape_of_a_new_name_past_64_shapes_is_refused_and_a_redefinition_is_applied() {
+    let mut model = Model::new(Style::default());
+    model.apply(badge()).unwrap();
+    for index in 0..Library::SHAPES {
+        model.apply(tower(&format!("s{index}"))).unwrap();
+    }
+    let before = model.clone();
+    let refusal = model.apply(tower("s64")).unwrap_err();
+    assert_eq!(refusal.to_string(), "shapes: 65, valid: 64 at most");
+    assert_eq!(model, before);
+    model.apply(polygons("s0", 2)).unwrap();
+    assert_eq!(model.style().library.shape("s0"), Some(0));
+    assert_eq!(model.style().library.shapes.len(), Library::SHAPES);
+}
+
+#[test]
+fn define_shape_past_the_vertex_budget_is_refused_and_a_redefinition_counts_its_new_size() {
+    let Change::DefineShape { parts, .. } = polygons("one", 1) else {
+        unreachable!()
+    };
+    assert_eq!(parts[0].vertices(), 2 * (12 * 64 - 12) + 36 * 3 * 64);
+    let mut model = Model::new(Style::default());
+    model.apply(polygons("a", 100)).unwrap();
+    let before = model.clone();
+    let refusal = model.apply(polygons("b", 20)).unwrap_err();
+    assert_eq!(
+        refusal.to_string(),
+        "vertices: 1010880, valid: 1000000 at most"
+    );
+    assert_eq!(model, before);
+    let refusal = model.apply(polygons("a", 119)).unwrap_err();
+    assert_eq!(
+        refusal.to_string(),
+        "vertices: 1002456, valid: 1000000 at most"
+    );
+    assert_eq!(model, before);
+    model.apply(polygons("a", 80)).unwrap();
+    model.apply(polygons("b", 38)).unwrap();
+    assert_eq!(model.style().library.vertices(), 118 * 8424);
+}
+
+const DOCUMENT: &str = r#"{
+  "format": "galaxy-relations",
+  "version": "0.1",
+  "source": {"name": "example", "snapshot": "snap-1", "query": "q"},
+  "nodes": [
+    {"id": "site-a", "kind": "site"},
+    {"id": "dns", "kind": "server", "in": "site-a"}
+  ]
+}
+"#;
+
+#[test]
+fn add_node_after_a_load_keeps_the_load_and_undo_gives_the_model_before() {
+    let load = Load::read("saved", "q", DOCUMENT.as_bytes(), Framing::Text).unwrap();
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    model.apply(Change::Load(load.clone())).unwrap();
+    let loaded = model.clone();
+    assert_eq!(model.relations(), load.relations());
+    let node = call(
+        "add_node",
+        r#"{"name":"web","kind":"server","in":"site-a"}"#,
+    )
+    .unwrap();
+    model.apply(node.clone()).unwrap();
+    assert_eq!(model.log().len(), site_log().len() + 2);
+    assert!(model.world().index(&id("web")).is_some());
+    assert_eq!(load.relations().nodes().len(), 2);
+    assert_eq!(model.undo(), Some(node));
+    assert_eq!(model, loaded);
+    assert_eq!(model.undo(), Some(Change::Load(load)));
+    assert_eq!(model, Model::replay(Style::default(), &site_log()).unwrap());
 }

@@ -469,9 +469,21 @@ pub struct World {
     roots: Placed,
     /// The column of each node in a parent with the arrangement layers.
     columns: Vec<usize>,
+    /// The columns of each parent with the arrangement layers, `None` for the nodes with no
+    /// parent.
+    layered: BTreeMap<Option<usize>, Layered>,
     flows: Vec<FlowLine>,
     library: Library,
     kept: Kept,
+}
+
+/// The columns of a parent with the arrangement layers.
+#[derive(Clone, Debug, PartialEq)]
+struct Layered {
+    /// The members of each column in the order of the children.
+    columns: Vec<Vec<usize>>,
+    /// The lowest centre on y less a quarter of the height of the children.
+    height: f64,
 }
 
 /// The paths of a call of `World::lanes` with its lines.
@@ -595,6 +607,35 @@ impl World {
                 size: sizes[index],
             };
         }
+        let mut layered = BTreeMap::new();
+        let groups = std::iter::once((None, &rules.root, &roots)).chain(
+            children
+                .iter()
+                .enumerate()
+                .filter(|(_, list)| !list.is_empty())
+                .map(|(index, list)| (Some(index), rules.rule(&nodes[index].kind), list)),
+        );
+        for (parent, rule, siblings) in groups {
+            if rule.arrangement != Arrangement::Layers {
+                continue;
+            }
+            let count = siblings.iter().map(|&node| columns[node] + 1).max();
+            let mut members = vec![Vec::new(); count.unwrap_or(0)];
+            for &node in siblings {
+                members[columns[node]].push(node);
+            }
+            let height = siblings
+                .iter()
+                .map(|&node| placed[node].centre[1] - placed[node].size[1] / 4.0)
+                .fold(f64::MAX, f64::min);
+            layered.insert(
+                parent,
+                Layered {
+                    columns: members,
+                    height,
+                },
+            );
+        }
         let mut world = Self {
             nodes: nodes.clone(),
             placed,
@@ -610,6 +651,7 @@ impl World {
                 size: extent,
             },
             columns,
+            layered,
             flows: Vec::new(),
             library: Library::default(),
             kept: Kept::default(),
@@ -1213,26 +1255,22 @@ impl World {
         let mut point = start;
         let mut room = self.rise_room(first, start, lateral(0));
         for &inner in &between {
-            let mut members = siblings
-                .iter()
-                .copied()
-                .filter(|&node| self.columns[node] == inner);
-            let turn = near(&mut members) - side * rule.gap / 2.0;
+            let members = self.members(parent, inner);
+            let turn = near(&mut members.iter().copied()) - side * rule.gap / 2.0;
             point[0] = turn;
             steps.push(Step::new(point, room));
-            let (z, next) = self.free(siblings, inner, point[2], end[2], rule.gap);
+            let (z, next) = self.free(members, point[2], end[2], rule.gap);
             if z != point[2] {
                 point[2] = z;
                 steps.push(Step::new(point, rule.gap / 2.0 * ROOM));
             }
             room = next;
         }
-        let mut last = siblings.iter().copied().filter(|&node| {
-            node == second
-                || rule.arrangement == Arrangement::Layers
-                    && self.columns[node] == self.columns[second]
-        });
-        let turn = near(&mut last) - side * rule.gap / 2.0;
+        let last = match rule.arrangement {
+            Arrangement::Layers => self.members(parent, self.columns[second]),
+            _ => std::slice::from_ref(&second),
+        };
+        let turn = near(&mut last.iter().copied()) - side * rule.gap / 2.0;
         point[0] = turn;
         steps.push(Step::new(point, room));
         for axis in [1, 2] {
@@ -1306,6 +1344,15 @@ impl World {
         Some(steps)
     }
 
+    /// The members of `column` of `parent` with the arrangement layers in the order of the
+    /// children, `None` for the nodes with no parent.
+    fn members(&self, parent: Option<usize>, column: usize) -> &[usize] {
+        self.layered
+            .get(&parent)
+            .and_then(|layered| layered.columns.get(column))
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// The steps of the wire from `from` to `to` in a later column of a parent with the
     /// arrangement layers.
     fn wire(&self, from: usize, to: usize) -> Option<Vec<Step>> {
@@ -1313,17 +1360,14 @@ impl World {
         if parent != self.parents[to] {
             return None;
         }
-        let (rule, siblings) = match parent {
-            Some(parent) => (&self.rules[parent], &self.children[parent]),
-            None => (&self.root, &self.top),
+        let rule = match parent {
+            Some(parent) => &self.rules[parent],
+            None => &self.root,
         };
         if rule.arrangement != Arrangement::Layers || self.columns[to] <= self.columns[from] {
             return None;
         }
-        let height = siblings
-            .iter()
-            .map(|&node| self.placed[node].centre[1] - self.placed[node].size[1] / 4.0)
-            .fold(f64::MAX, f64::min);
+        let height = self.layered.get(&parent)?.height;
         let level = |node: usize| {
             let mut point = self.placed[node].centre;
             point[1] = height;
@@ -1334,9 +1378,9 @@ impl World {
         let mut z = level(from)[2];
         let mut room = depth(from);
         for column in self.columns[from] + 1..=self.columns[to] {
-            let left = siblings
+            let members = self.members(parent, column);
+            let left = members
                 .iter()
-                .filter(|&&node| self.columns[node] == column)
                 .map(|&node| self.placed[node].centre[0] - self.placed[node].size[0] / 2.0)
                 .fold(f64::MAX, f64::min);
             let turn = left - rule.gap / 2.0;
@@ -1344,7 +1388,7 @@ impl World {
             let (target, next) = if column == self.columns[to] {
                 (self.placed[to].centre[2], depth(to))
             } else {
-                self.free(siblings, column, z, self.placed[to].centre[2], rule.gap)
+                self.free(members, z, self.placed[to].centre[2], rule.gap)
             };
             if target != z {
                 steps.push(Step::new([turn, height, target], rule.gap / 2.0 * ROOM));
@@ -1356,14 +1400,13 @@ impl World {
         Some(steps)
     }
 
-    /// The coordinate on z of the free stretch of `column` of `siblings` nearest to `z`, then
+    /// The coordinate on z of the free stretch of the column of `members` nearest to `z`, then
     /// nearest to `goal`, then the largest, and its room: `z` itself when a quarter of `gap` or
     /// more lies between it and each node of the column, the middle of each stretch between 2
     /// nodes of the column, and half of `gap` before the first and after the last node.
-    fn free(&self, siblings: &[usize], column: usize, z: f64, goal: f64, gap: f64) -> (f64, f64) {
-        let mut spans: Vec<[f64; 2]> = siblings
+    fn free(&self, members: &[usize], z: f64, goal: f64, gap: f64) -> (f64, f64) {
+        let mut spans: Vec<[f64; 2]> = members
             .iter()
-            .filter(|&&node| self.columns[node] == column)
             .map(|&node| {
                 let placed = &self.placed[node];
                 [-0.5, 0.5].map(|side| placed.centre[2] + side * placed.size[2])
@@ -1599,28 +1642,94 @@ impl World {
                 second: self.nodes[second].id.clone(),
             });
         }
+        let bounds = self.bounds();
+        let mut allowed = vec![false; self.nodes.len()];
+        let mut hit = vec![false; self.nodes.len()];
+        let mut set = Vec::new();
+        let mut hits = Vec::new();
+        let mut open: Vec<usize> = Vec::new();
         for flow in &self.flows {
-            let mut allowed = vec![false; self.nodes.len()];
             for &node in &flow.nodes {
-                for index in self.chain(node) {
-                    allowed[index] = true;
+                let mut current = Some(node);
+                while let Some(index) = current {
+                    if !allowed[index] {
+                        allowed[index] = true;
+                        set.push(index);
+                    }
+                    current = self.parents[index];
                 }
             }
-            for (index, node) in self.nodes.iter().enumerate() {
-                let crossed = !allowed[index]
-                    && flow
-                        .points
-                        .windows(2)
-                        .any(|pair| crosses(pair[0], pair[1], &self.placed[index]));
-                if crossed {
-                    broken.push(Broken::Crosses {
-                        flow: flow.id.clone(),
-                        node: node.id.clone(),
-                    });
+            for pair in flow.points.windows(2) {
+                let (start, end) = (pair[0], pair[1]);
+                let low = [0, 1, 2].map(|axis| start[axis].min(end[axis]));
+                let high = [0, 1, 2].map(|axis| start[axis].max(end[axis]));
+                let finite = start.iter().chain(&end).all(|value| value.is_finite());
+                open.clear();
+                open.extend(self.top.iter().rev());
+                while let Some(index) = open.pop() {
+                    let [lowest, highest] = bounds[index];
+                    if finite && (0..3).any(|q| highest[q] <= low[q] || lowest[q] >= high[q]) {
+                        continue;
+                    }
+                    if !allowed[index] && !hit[index] && crosses(start, end, &self.placed[index]) {
+                        hit[index] = true;
+                        hits.push(index);
+                    }
+                    open.extend(self.children[index].iter().rev());
+                }
+            }
+            hits.sort_unstable();
+            for &index in &hits {
+                hit[index] = false;
+                broken.push(Broken::Crosses {
+                    flow: flow.id.clone(),
+                    node: self.nodes[index].id.clone(),
+                });
+            }
+            hits.clear();
+            for &index in &set {
+                allowed[index] = false;
+            }
+            set.clear();
+        }
+        broken
+    }
+
+    /// The box of each node and its descendants that holds each box of `crosses` of them, as the
+    /// lowest and the highest coordinate on each axis. A box with a coordinate that is not a
+    /// number reaches from -infinity to +infinity.
+    fn bounds(&self) -> Vec<[Vec3; 2]> {
+        let mut bounds: Vec<[Vec3; 2]> = self
+            .placed
+            .iter()
+            .map(|placed| {
+                let mut lowest = [0.0; 3];
+                let mut highest = [0.0; 3];
+                for axis in 0..3 {
+                    let low = placed.centre[axis] - placed.size[axis] / 2.0 + TOLERANCE;
+                    let high = placed.centre[axis] + placed.size[axis] / 2.0 - TOLERANCE;
+                    if low.is_nan() || high.is_nan() {
+                        lowest[axis] = f64::NEG_INFINITY;
+                        highest[axis] = f64::INFINITY;
+                    } else {
+                        lowest[axis] = low.min(high);
+                        highest[axis] = low.max(high);
+                    }
+                }
+                [lowest, highest]
+            })
+            .collect();
+        for index in (0..bounds.len()).rev() {
+            if let Some(parent) = self.parents[index] {
+                let [lowest, highest] = bounds[index];
+                let outer = &mut bounds[parent];
+                for axis in 0..3 {
+                    outer[0][axis] = outer[0][axis].min(lowest[axis]);
+                    outer[1][axis] = outer[1][axis].max(highest[axis]);
                 }
             }
         }
-        broken
+        bounds
     }
 
     /// One line for each node in name order: the name, the kind, the parent, the centre and the
@@ -1746,15 +1855,26 @@ fn arrange(
             extent
         }
         Arrangement::Layers => {
-            let position = |node: usize| children.iter().position(|&child| child == node);
+            let places: BTreeMap<usize, usize> = children
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(place, &child)| (child, place))
+                .collect();
             let mut next = vec![Vec::new(); children.len()];
+            let mut accepted = std::collections::BTreeSet::new();
+            let mut search = Search {
+                seen: vec![0; children.len()],
+                generation: 0,
+                open: Vec::new(),
+            };
             let mut kept = Vec::new();
             for &(from, to) in links {
-                if let (Some(from), Some(to)) = (position(from), position(to))
+                if let (Some(&from), Some(&to)) = (places.get(&from), places.get(&to))
                     && from != to
-                    && !reaches(&next, to, from)
+                    && (accepted.contains(&(from, to)) || !search.reaches(&next, to, from))
                 {
-                    if !next[from].contains(&to) {
+                    if accepted.insert((from, to)) {
                         next[from].push(to);
                     }
                     kept.push((from, to));
@@ -1820,20 +1940,31 @@ fn arrange(
     }
 }
 
-/// Whether `next` leads from the place `from` to the place `to`.
-fn reaches(next: &[Vec<usize>], from: usize, to: usize) -> bool {
-    let mut seen = vec![false; next.len()];
-    let mut open = vec![from];
-    while let Some(place) = open.pop() {
-        if place == to {
-            return true;
+/// The buffers of a search of the places of a parent with the arrangement layers. A place is
+/// seen in the current search when its entry in `seen` equals `generation`.
+struct Search {
+    seen: Vec<u64>,
+    generation: u64,
+    open: Vec<usize>,
+}
+
+impl Search {
+    /// Whether `next` leads from the place `from` to the place `to`.
+    fn reaches(&mut self, next: &[Vec<usize>], from: usize, to: usize) -> bool {
+        self.generation += 1;
+        self.open.clear();
+        self.open.push(from);
+        while let Some(place) = self.open.pop() {
+            if place == to {
+                return true;
+            }
+            if self.seen[place] != self.generation {
+                self.seen[place] = self.generation;
+                self.open.extend(&next[place]);
+            }
         }
-        if !seen[place] {
-            seen[place] = true;
-            open.extend(&next[place]);
-        }
+        false
     }
-    false
 }
 
 /// Orders the members of each column of `columns` to reduce the crossings of `links` between 2
@@ -1865,7 +1996,18 @@ fn order(columns: &mut [Vec<usize>], links: &[(usize, usize)], column_of: &[usiz
         })
         .copied()
         .collect();
-    let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut span = 0usize;
+    for &(from, to) in &pairs {
+        span += column_of[to] - column_of[from];
+        if span > ORDER_LINKS {
+            return;
+        }
+    }
+    if span == 0 {
+        return;
+    }
+    members.reserve(span);
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(span);
     for (from, to) in pairs {
         let mut previous = item[&from];
         for slot in &mut slots[column_of[from] + 1..column_of[to]] {
@@ -1875,9 +2017,6 @@ fn order(columns: &mut [Vec<usize>], links: &[(usize, usize)], column_of: &[usiz
             members.push(None);
         }
         edges.push((previous, item[&to]));
-    }
-    if edges.is_empty() || edges.len() > ORDER_LINKS {
-        return;
     }
     let mut before = vec![Vec::new(); members.len()];
     let mut after = vec![Vec::new(); members.len()];

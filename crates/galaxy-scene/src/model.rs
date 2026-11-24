@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use crate::document::Load;
 use crate::id::ObjectId;
@@ -130,7 +131,7 @@ impl std::error::Error for ChangeRefusal {}
 pub struct Model {
     base: Style,
     style: Style,
-    relations: Relations,
+    relations: Arc<Relations>,
     log: Vec<Change>,
 }
 
@@ -140,7 +141,7 @@ impl Model {
         Self {
             style: base.clone(),
             base,
-            relations: Relations::new(),
+            relations: Arc::new(Relations::new()),
             log: Vec::new(),
         }
     }
@@ -174,7 +175,7 @@ impl Model {
                 fields,
             } => {
                 check_kind(kind)?;
-                self.relations
+                Arc::make_mut(&mut self.relations)
                     .add_with_fields(id.clone(), kind, parent.clone(), fields.clone())
                     .map_err(ChangeRefusal::Relation)?
             }
@@ -183,8 +184,7 @@ impl Model {
                 path,
                 outcome,
                 fields,
-            } => self
-                .relations
+            } => Arc::make_mut(&mut self.relations)
                 .add_flow_with_data(id.clone(), path.clone(), outcome.clone(), fields.clone())
                 .map_err(ChangeRefusal::Relation)?,
             Change::SetRule {
@@ -236,10 +236,27 @@ impl Model {
                     parts: parts.clone(),
                     symbol: symbol.clone(),
                 };
-                let shapes = &mut self.style.library.shapes;
-                match shapes.iter().position(|defined| &defined.name == name) {
-                    Some(index) => shapes[index] = shape,
-                    None => shapes.push(shape),
+                let library = &mut self.style.library;
+                let index = library.shape(name);
+                if index.is_none() && library.shapes.len() >= Library::SHAPES {
+                    return Err(ChangeRefusal::Value {
+                        field: "shapes".to_owned(),
+                        value: (Library::SHAPES + 1).to_string(),
+                        valid: format!("{} at most", Library::SHAPES),
+                    });
+                }
+                let replaced = index.map_or(0, |index| library.shapes[index].vertices());
+                let vertices = library.vertices() - replaced + shape.vertices();
+                if vertices > Library::VERTICES {
+                    return Err(ChangeRefusal::Value {
+                        field: "vertices".to_owned(),
+                        value: vertices.to_string(),
+                        valid: format!("{} at most", Library::VERTICES),
+                    });
+                }
+                match index {
+                    Some(index) => library.shapes[index] = shape,
+                    None => library.shapes.push(shape),
                 }
             }
             Change::SetMaterial { name, colours } => {
@@ -260,19 +277,33 @@ impl Model {
                     }),
                 }
             }
-            Change::Clear => self.relations = Relations::new(),
-            Change::Load(load) => self.relations = load.relations().clone(),
+            Change::Clear => self.relations = Arc::new(Relations::new()),
+            Change::Load(load) => self.relations = load.shared(),
             Change::LoadView { .. } => return Err(ChangeRefusal::Unread),
         }
         self.log.push(change);
         Ok(())
     }
 
-    /// Reverts the last change of the log, removes it from the log and gives it back.
+    /// Reverts the last change of the log, removes it from the log and gives it back. The model
+    /// applies the log again with no add node and no add flow before the last load or clear.
     pub fn undo(&mut self) -> Option<Change> {
         let change = self.log.pop()?;
         let log = std::mem::take(&mut self.log);
-        *self = Self::replay(self.base.clone(), &log).expect("each change of the log applies");
+        let reset = log
+            .iter()
+            .rposition(|change| matches!(change, Change::Load(_) | Change::Clear));
+        let mut model = Self::new(self.base.clone());
+        for (index, change) in log.into_iter().enumerate() {
+            let replaced = reset.is_some_and(|reset| index < reset)
+                && matches!(change, Change::AddNode { .. } | Change::AddFlow { .. });
+            if replaced {
+                model.log.push(change);
+            } else {
+                model.apply(change).expect("each change of the log applies");
+            }
+        }
+        *self = model;
         Some(change)
     }
 
