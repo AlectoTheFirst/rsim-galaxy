@@ -1626,9 +1626,44 @@ impl World {
             }
         }
         let mut pairs = Vec::new();
+        let mut spans = Vec::new();
+        let mut unbounded = Vec::new();
         for group in std::iter::once(&self.top).chain(&self.children) {
-            for (place, &first) in group.iter().enumerate() {
-                for &second in &group[place + 1..] {
+            spans.clear();
+            unbounded.clear();
+            for &node in group {
+                let placed = &self.placed[node];
+                let (centre, half) = (placed.centre[0], placed.size[0] / 2.0);
+                if centre.is_nan() || placed.size[0].is_nan() {
+                    continue;
+                }
+                // The pad exceeds the rounding error of `intersect` on x. The spans of 2 nodes
+                // that intersect overlap.
+                let pad = (centre.abs() + half.abs()) * 1e-12 + TOLERANCE;
+                let (low, high) = (centre - half - pad, centre + half + pad);
+                if !centre.is_finite() || !half.is_finite() || low.is_nan() || high.is_nan() {
+                    unbounded.push(node);
+                    continue;
+                }
+                spans.push((low, high, node));
+            }
+            spans.sort_unstable_by(|first, second| first.0.total_cmp(&second.0));
+            for (place, &(_, high, first)) in spans.iter().enumerate() {
+                for &(low, _, second) in &spans[place + 1..] {
+                    if low >= high {
+                        break;
+                    }
+                    if intersect(&self.placed[first], &self.placed[second]) {
+                        pairs.push((first.min(second), first.max(second)));
+                    }
+                }
+            }
+            for (place, &first) in unbounded.iter().enumerate() {
+                let others = spans
+                    .iter()
+                    .map(|&(_, _, node)| node)
+                    .chain(unbounded[place + 1..].iter().copied());
+                for second in others {
                     if intersect(&self.placed[first], &self.placed[second]) {
                         pairs.push((first.min(second), first.max(second)));
                     }
@@ -1868,30 +1903,31 @@ fn arrange(
                 generation: 0,
                 open: Vec::new(),
             };
-            let mut kept = Vec::new();
+            let mut entering = vec![0usize; children.len()];
             for &(from, to) in links {
                 if let (Some(&from), Some(&to)) = (places.get(&from), places.get(&to))
                     && from != to
-                    && (accepted.contains(&(from, to)) || !search.reaches(&next, to, from))
+                    && !accepted.contains(&(from, to))
+                    && !search.reaches(&next, to, from)
                 {
-                    if accepted.insert((from, to)) {
-                        next[from].push(to);
-                    }
-                    kept.push((from, to));
+                    accepted.insert((from, to));
+                    next[from].push(to);
+                    entering[to] += 1;
                 }
             }
+            // The column of a child is the length of the longest path to it in `next`, which
+            // has no cycle.
             let mut column = vec![0usize; children.len()];
-            for _ in 0..children.len() {
-                let mut moved = false;
-                for &(from, to) in &kept {
-                    let step = column[from] + 1;
-                    if step > column[to] {
-                        column[to] = step;
-                        moved = true;
+            let mut queue: std::collections::VecDeque<usize> = (0..children.len())
+                .filter(|&place| entering[place] == 0)
+                .collect();
+            while let Some(from) = queue.pop_front() {
+                for &to in &next[from] {
+                    column[to] = column[to].max(column[from] + 1);
+                    entering[to] -= 1;
+                    if entering[to] == 0 {
+                        queue.push_back(to);
                     }
-                }
-                if !moved {
-                    break;
                 }
             }
             let count = column.iter().max().map_or(0, |last| last + 1);

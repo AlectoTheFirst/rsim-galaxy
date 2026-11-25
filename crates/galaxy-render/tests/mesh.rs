@@ -1,5 +1,5 @@
 use galaxy_render::mesh::{
-    Fit, Material, Mesh, Registry, Vertex, build, count, fitted, forms, reference, region,
+    Fit, Material, Mesh, Regions, Registry, Vertex, build, count, fitted, forms, reference, region,
 };
 use galaxy_scene::{Axis, Colours, DefinedShape, Library, Part, Shape, Solid, Style};
 
@@ -603,6 +603,126 @@ fn symbol_part_of_a_defined_shape_fits_the_face_across_its_smallest_side() {
             assert_eq!(vertex.material[2], Fit::None as u32, "{vertex:?}");
         }
     }
+}
+
+#[test]
+fn symbol_parts_of_a_defined_shape_on_1_face_have_1_region() {
+    let mut library = lamp();
+    let mut mark = part(
+        Solid::Box,
+        [0.3, -0.1, 0.49],
+        [0.1, 0.1, 0.02],
+        Axis::Y,
+        "symbol",
+    );
+    mark.edges = false;
+    library.shapes[0].parts.push(mark);
+    library.shapes[0].symbol = vec![3, 4];
+    let registry = Registry::with_library(&library);
+    let regions = Regions::new(&library);
+    let front = regions.get(Mesh::Defined(0), Fit::Z);
+    let expected = [0.7, 0.65, 0.24];
+    for axis in 0..3 {
+        assert!((front[axis] - expected[axis]).abs() < 1e-6, "{front:?}");
+    }
+    let symbol = Material::Symbol as u32;
+    let extents: Vec<[f32; 3]> = registry
+        .vertices(Mesh::Defined(0))
+        .iter()
+        .filter(|vertex| vertex.material[0] == symbol)
+        .map(|vertex| vertex.extent)
+        .collect();
+    assert!(!extents.is_empty());
+    assert!(
+        extents.iter().all(|extent| extent.map(f64::from) == front),
+        "{extents:?}"
+    );
+    assert_eq!(regions.get(Mesh::Defined(0), Fit::Y), [1.0; 3]);
+    assert_eq!(regions.get(Mesh::Defined(1), Fit::Z), [1.0; 3]);
+    assert_eq!(regions.get(Mesh::Defined(3), Fit::Z), [1.0; 3]);
+    assert_eq!(
+        regions.get(Mesh::Switch, Fit::Z),
+        region(Mesh::Switch, Fit::Z)
+    );
+}
+
+#[test]
+fn defined_shape_with_sides_below_the_resolution_of_f32_has_finite_vertices() {
+    let prism = || Solid::Prism(vec![[-0.5, -0.5], [0.0, 0.5], [0.5, -0.5]]);
+    let mut library = Library::default();
+    library.shapes.push(DefinedShape {
+        name: "thin".to_owned(),
+        parts: vec![
+            part(
+                Solid::Box,
+                [0.25, 0.0, 0.0],
+                [1e-12, 0.5, 0.5],
+                Axis::Y,
+                "body",
+            ),
+            part(
+                Solid::Box,
+                [-0.25, 0.0, 0.0],
+                [0.4, 1e-50, 1e-50],
+                Axis::Y,
+                "body",
+            ),
+            part(
+                Solid::Cylinder,
+                [0.0, 0.25, 0.0],
+                [1e-12, 0.3, 0.3],
+                Axis::Y,
+                "body",
+            ),
+            part(
+                Solid::Cylinder,
+                [0.0, -0.25, 0.0],
+                [1e-12, 0.3, 1e-12],
+                Axis::Y,
+                "body",
+            ),
+            part(
+                prism(),
+                [0.0, 0.0, 0.25],
+                [0.4, 1e-12, 0.4],
+                Axis::Y,
+                "body",
+            ),
+            part(
+                prism(),
+                [0.0, 0.0, -0.25],
+                [0.4, 1e-12, 0.4],
+                Axis::Y,
+                "symbol",
+            ),
+        ],
+        symbol: vec![5],
+    });
+    let registry = Registry::with_library(&library);
+    for mesh in [Mesh::Defined(0), Mesh::Defined(1), Mesh::Defined(2)] {
+        let vertices = registry.vertices(mesh);
+        assert!(!vertices.is_empty(), "{mesh:?}");
+        for vertex in vertices {
+            let values = [
+                vertex.position,
+                vertex.normal,
+                vertex.offset,
+                vertex.local,
+                vertex.extent,
+                vertex.anchor,
+            ];
+            assert!(
+                values.iter().flatten().all(|value| value.is_finite()),
+                "{mesh:?} {vertex:?}"
+            );
+            assert!(
+                dot(vertex.normal, vertex.normal) > 0.9,
+                "{mesh:?} {vertex:?}"
+            );
+        }
+    }
+    let top = Regions::new(&library).get(Mesh::Defined(0), Fit::Y);
+    assert!(top.iter().all(|side| side.is_finite()), "{top:?}");
 }
 
 /// The lowest and highest position of the vertices of `mesh` with the fit `fit`.

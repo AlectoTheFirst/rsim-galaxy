@@ -512,17 +512,27 @@ fn thinnest(part: &Part) -> usize {
     })
 }
 
-/// Sets the fit `fit` and the anchor `anchor` of each vertex of `vertices`, and its region: on
-/// each axis twice the largest distance of a vertex from the anchor, with `INSET` on each side,
-/// at most the unit box.
+/// Sets the fit `fit` and the anchor `anchor` of each vertex of `vertices`, and its region as
+/// `span` gives it.
 fn fit(vertices: &mut [Vertex], fit: Fit, anchor: [f32; 3]) {
+    let region = span(vertices, anchor);
+    place(vertices, fit, anchor, region);
+}
+
+/// The region of the symbol of `vertices` around `anchor`: on each axis twice the largest
+/// distance of a vertex from the anchor, with `INSET` on each side, at most the unit box.
+fn span(vertices: &[Vertex], anchor: [f32; 3]) -> [f32; 3] {
     let mut reach = [0.0_f32; 3];
-    for vertex in vertices.iter() {
+    for vertex in vertices {
         for axis in 0..3 {
             reach[axis] = reach[axis].max((vertex.position[axis] - anchor[axis]).abs());
         }
     }
-    let region = reach.map(|reach| (2.0 * (reach + INSET)).min(1.0));
+    reach.map(|reach| (2.0 * (reach + INSET)).min(1.0))
+}
+
+/// Sets the fit `fit`, the anchor `anchor` and the region `region` of each vertex of `vertices`.
+fn place(vertices: &mut [Vertex], fit: Fit, anchor: [f32; 3], region: [f32; 3]) {
     for vertex in vertices {
         vertex.material[1] = Bevel::None as u32;
         vertex.material[2] = fit as u32;
@@ -673,33 +683,10 @@ fn names(library: &Library) -> Vec<String> {
 
 /// The meshes of the defined shape `shape`: with its symbol, without its symbol, and the edges of
 /// each part with edges outside its symbol. A part takes the index of its material in `library`.
-/// A part of the symbol fits the face across the axis of its smallest side. Its anchor is the
-/// middle of the box of the parts of the symbol on that face, on the side of that box toward the
-/// middle of the unit box across the face.
+/// A part of the symbol fits the face across the axis of its smallest side, with the anchor and
+/// the region of `symbol_faces`.
 fn defined(shape: &DefinedShape, library: &Library) -> [Vec<Vertex>; 3] {
-    let symbol: Vec<(usize, &Part)> = shape
-        .symbol
-        .iter()
-        .filter_map(|&index| shape.parts.get(index).map(|part| (index, part)))
-        .collect();
-    let anchor = |across: usize| {
-        let mut low = [f32::MAX; 3];
-        let mut high = [f32::MIN; 3];
-        for (_, part) in symbol.iter().filter(|(_, part)| thinnest(part) == across) {
-            let (part_low, part_high) = part_box(part);
-            for axis in 0..3 {
-                low[axis] = low[axis].min(part_low[axis]);
-                high[axis] = high[axis].max(part_high[axis]);
-            }
-        }
-        let mut anchor = [0, 1, 2].map(|axis| (low[axis] + high[axis]) / 2.0);
-        anchor[across] = if anchor[across] >= 0.0 {
-            low[across]
-        } else {
-            high[across]
-        };
-        anchor
-    };
+    let faces = symbol_faces(shape);
     let mut full = Vec::new();
     let mut plain = Vec::new();
     let mut edges = Vec::new();
@@ -707,9 +694,11 @@ fn defined(shape: &DefinedShape, library: &Library) -> [Vec<Vertex>; 3] {
         let material = library.material(&part.material).unwrap_or(0) as u32;
         let start = full.len();
         part_solid(&mut full, part, material);
-        if symbol.iter().any(|(symbol, _)| *symbol == index) {
+        if shape.symbol.contains(&index) {
             let across = thinnest(part);
-            fit(&mut full[start..], Fit::of(across), anchor(across));
+            if let Some((anchor, region)) = faces[across] {
+                place(&mut full[start..], Fit::of(across), anchor, region);
+            }
         } else {
             plain.extend_from_slice(&full[start..]);
             if part.edges {
@@ -718,6 +707,77 @@ fn defined(shape: &DefinedShape, library: &Library) -> [Vec<Vertex>; 3] {
         }
     }
     [full, plain, edges]
+}
+
+/// The anchor and the region of the symbol of `shape` on the face across x, y and z, `None` for a
+/// face with no part of the symbol. The parts of the symbol on a face are the parts whose
+/// smallest side is across that face. The anchor is the middle of the box of these parts, on the
+/// side of that box toward the middle of the unit box across the face. The region is the region
+/// of the vertices of these parts around the anchor, as `span` gives it.
+fn symbol_faces(shape: &DefinedShape) -> [Option<([f32; 3], [f32; 3])>; 3] {
+    [0, 1, 2].map(|across| {
+        let parts: Vec<&Part> = shape
+            .symbol
+            .iter()
+            .filter_map(|&index| shape.parts.get(index))
+            .filter(|part| thinnest(part) == across)
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let mut low = [f32::MAX; 3];
+        let mut high = [f32::MIN; 3];
+        let mut vertices = Vec::new();
+        for part in &parts {
+            let (part_low, part_high) = part_box(part);
+            for axis in 0..3 {
+                low[axis] = low[axis].min(part_low[axis]);
+                high[axis] = high[axis].max(part_high[axis]);
+            }
+            part_solid(&mut vertices, part, 0);
+        }
+        let mut anchor = [0, 1, 2].map(|axis| (low[axis] + high[axis]) / 2.0);
+        anchor[across] = if anchor[across] >= 0.0 {
+            low[across]
+        } else {
+            high[across]
+        };
+        Some((anchor, span(&vertices, anchor)))
+    })
+}
+
+/// The regions of the symbols of the defined shapes of a library on the faces across x, y and z.
+pub struct Regions(Vec<[Option<[f64; 3]>; 3]>);
+
+impl Regions {
+    pub fn new(library: &Library) -> Self {
+        Self(
+            library
+                .shapes
+                .iter()
+                .map(|shape| {
+                    symbol_faces(shape).map(|face| face.map(|(_, region)| region.map(f64::from)))
+                })
+                .collect(),
+        )
+    }
+
+    /// The region of the symbol vertices of `mesh` with the fit `fit`, as `region` gives it for a
+    /// built-in mesh. For the mesh with its symbol of a defined shape, it is the region of its
+    /// symbol on the face of `fit`, or the whole unit box for a face with no part of the symbol.
+    pub fn get(&self, mesh: Mesh, fit: Fit) -> [f64; 3] {
+        match mesh {
+            Mesh::Defined(index) => {
+                let face = match (index % 3, fit) {
+                    (0, Fit::X | Fit::Y | Fit::Z) => fit.across(),
+                    _ => None,
+                };
+                face.and_then(|across| self.0.get(index / 3)?[across])
+                    .unwrap_or([1.0; 3])
+            }
+            _ => region(mesh, fit),
+        }
+    }
 }
 
 /// The low and the high corner of the box of `part`.
@@ -2077,7 +2137,8 @@ fn block(
 /// Appends the prism of the simple polygon `points` from `range[0]` to `range[1]` along `axis`.
 /// A point of `points` gives the coordinates on the axes `axis + 1` and `axis + 2`, modulo 3.
 /// The triangles are counter-clockwise from outside. With `smooth`, the normal of a corner of a
-/// side face is the mean of the normals of the 2 side faces at that corner.
+/// side face is the mean of the normals of the 2 side faces at that corner, or the normal of the
+/// side face where that mean is 0. A side face of width 0 has its normal along `axis`.
 fn prism(
     out: &mut Vec<Vertex>,
     points: &[[f32; 2]],
@@ -2146,33 +2207,44 @@ fn prism(
             out.extend(order.map(|corner| vertex(points[corner], height, [0.0, 0.0], cap)));
         }
     }
+    let unit = |[du, dv]: [f32; 2]| {
+        let length = (du * du + dv * dv).sqrt();
+        (length > 0.0).then(|| [du / length, dv / length])
+    };
     let side = |index: usize| {
         let (a, b) = (points[index % count], points[(index + 1) % count]);
-        let (du, dv) = (b[0] - a[0], b[1] - a[1]);
-        let length = (du * du + dv * dv).sqrt();
-        [dv / length, -du / length]
+        unit([b[1] - a[1], a[0] - b[0]])
+    };
+    let mean = |first: Option<[f32; 2]>, second: Option<[f32; 2]>| {
+        unit(
+            [first, second]
+                .into_iter()
+                .flatten()
+                .fold([-0.0, -0.0], |sum, normal| {
+                    [sum[0] + normal[0], sum[1] + normal[1]]
+                }),
+        )
+    };
+    let corner = |point: [f32; 2], height: f32, normal: Option<[f32; 2]>| match normal {
+        Some(normal) => vertex(point, height, normal, 0.0),
+        None => vertex(point, height, [0.0, 0.0], 1.0),
     };
     for index in 0..count {
         let (a, b) = (points[index], points[(index + 1) % count]);
         let face = side(index);
         let (na, nb) = if smooth {
-            let mean = |first: [f32; 2], second: [f32; 2]| {
-                let sum = [first[0] + second[0], first[1] + second[1]];
-                let length = (sum[0] * sum[0] + sum[1] * sum[1]).sqrt();
-                [sum[0] / length, sum[1] / length]
-            };
             (
-                mean(side(index + count - 1), face),
-                mean(face, side(index + 1)),
+                mean(side(index + count - 1), face).or(face),
+                mean(face, side(index + 1)).or(face),
             )
         } else {
             (face, face)
         };
         let corners = [
-            vertex(a, from, na, 0.0),
-            vertex(b, from, nb, 0.0),
-            vertex(b, to, nb, 0.0),
-            vertex(a, to, na, 0.0),
+            corner(a, from, na),
+            corner(b, from, nb),
+            corner(b, to, nb),
+            corner(a, to, na),
         ];
         out.extend([0, 1, 2, 0, 2, 3].map(|corner| corners[corner]));
     }
@@ -2203,10 +2275,22 @@ fn box_edges(out: &mut Vec<Vertex>, low: [f32; 3], high: [f32; 3]) {
 
 /// Appends the bar from `a` to `b` with a square section of the edge thickness: 1 side of the
 /// section along the unit vector `side`, square to the bar, and the bar longer by the thickness.
+/// A bar of length 0 lies along the axis of the smallest part of `side`, the first such axis.
 fn bar(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], side: [f32; 3]) {
     let along = [0, 1, 2].map(|axis| b[axis] - a[axis]);
     let length = along.iter().map(|value| value * value).sum::<f32>().sqrt();
-    let along = along.map(|value| value / length);
+    let along = if length > 0.0 {
+        along.map(|value| value / length)
+    } else {
+        let least = (0..3).fold(0, |least, axis| {
+            if side[axis].abs() < side[least].abs() {
+                axis
+            } else {
+                least
+            }
+        });
+        [0, 1, 2].map(|axis| if axis == least { 1.0 } else { 0.0 })
+    };
     let other = [
         along[1] * side[2] - along[2] * side[1],
         along[2] * side[0] - along[0] * side[2],

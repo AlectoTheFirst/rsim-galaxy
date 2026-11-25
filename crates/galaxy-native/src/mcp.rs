@@ -1,33 +1,79 @@
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 use galaxy_scene::{Json, wire};
 
+use crate::fetch::MESSAGE;
 use crate::viewer::{self, Reply};
 
 const PROTOCOL: &str = "2025-06-18";
+/// The MCP versions that `initialize` answers with the version of the client.
+const VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 
 /// Serves the tools on MCP over JSON-RPC lines: reads requests from `input` until its end and
-/// writes the answers to `output`. `call` answers a tool call.
+/// writes the answers to `output`. `call` answers a tool call. A line above `MESSAGE` bytes gets
+/// the error -32700, and the rest of it is read and dropped.
 pub fn serve(
-    input: impl BufRead,
+    mut input: impl BufRead,
     mut output: impl Write,
     mut call: impl FnMut(&str, &Json) -> Reply,
 ) -> std::io::Result<()> {
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    loop {
+        let mut bytes = Vec::new();
+        if (&mut input)
+            .take(MESSAGE as u64 + 1)
+            .read_until(b'\n', &mut bytes)?
+            == 0
+        {
+            return Ok(());
         }
-        let answer = match Json::parse(&line) {
-            Ok(message) => answer(&message, &mut call),
-            Err(error) => Some(failure(Json::Null, -32700, &error.to_string())),
+        let answer = if bytes.len() > MESSAGE {
+            if bytes.last() != Some(&b'\n') {
+                skip_line(&mut input)?;
+            }
+            Some(failure(
+                Json::Null,
+                -32700,
+                &format!("a message of {MESSAGE} bytes or fewer"),
+            ))
+        } else {
+            let line = String::from_utf8(bytes)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            let line = line.strip_suffix('\n').unwrap_or(&line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.trim().is_empty() {
+                continue;
+            }
+            match Json::parse(line) {
+                Ok(message) => answer(&message, &mut call),
+                Err(error) => Some(failure(Json::Null, -32700, &error.to_string())),
+            }
         };
         if let Some(answer) = answer {
             writeln!(output, "{answer}")?;
             output.flush()?;
         }
     }
-    Ok(())
+}
+
+/// Reads and drops the bytes of `input` up to the end of the next line break or the end of the
+/// input.
+fn skip_line(input: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let buffer = input.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        match buffer.iter().position(|&byte| byte == b'\n') {
+            Some(end) => {
+                input.consume(end + 1);
+                return Ok(());
+            }
+            None => {
+                let length = buffer.len();
+                input.consume(length);
+            }
+        }
+    }
 }
 
 /// The answer to a JSON-RPC message, or `None` for a notification.
@@ -40,6 +86,7 @@ fn answer(message: &Json, call: &mut impl FnMut(&str, &Json) -> Reply) -> Option
             let version = params
                 .get("protocolVersion")
                 .and_then(Json::as_str)
+                .filter(|version| VERSIONS.contains(version))
                 .unwrap_or(PROTOCOL);
             Json::object([
                 ("protocolVersion", Json::string(version)),
@@ -169,6 +216,18 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn initialize_with_an_unknown_version_answers_2025_06_18() {
+        let answers = session(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}"#,
+        ]);
+        let result = answers[0].get("result").unwrap();
+        assert_eq!(
+            result.get("protocolVersion"),
+            Some(&Json::string("2025-06-18"))
+        );
     }
 
     #[test]

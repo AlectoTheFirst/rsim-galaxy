@@ -239,7 +239,7 @@ fn decode_lossy(raw: &str) -> String {
 
 /// The file `<query>.json`, a document, or else `<query>.jsonl`, a stream, of the directory
 /// `dir`. A document above `document::DOCUMENT_BYTES` and a stream above `STREAM` are refused
-/// before the read.
+/// before the read, and the read stops after 1 byte above the limit.
 fn file(dir: &Path, query: &str) -> Result<Fetched, LoadRefusal> {
     if ObjectId::new(query).is_none() {
         return Err(refusal("query", Code::Value, NAME_VALID));
@@ -255,14 +255,20 @@ fn file(dir: &Path, query: &str) -> Result<Fetched, LoadRefusal> {
             } else {
                 STREAM
             };
+            let large = || LoadRefusal {
+                at: "document".to_owned(),
+                ..refusal("text", Code::Size, format!("{most} bytes"))
+            };
             if length > most as u64 {
-                return Err(LoadRefusal {
-                    at: "document".to_owned(),
-                    ..refusal("text", Code::Size, format!("{most} bytes"))
-                });
+                return Err(large());
             }
-            let bytes = std::fs::read(&path)
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path)
+                .and_then(|file| file.take(most as u64 + 1).read_to_end(&mut bytes))
                 .map_err(|error| refusal("query", Code::Source, error.to_string()))?;
+            if bytes.len() > most {
+                return Err(large());
+            }
             return Ok(Fetched {
                 bytes,
                 frames: if extension == "json" {
@@ -309,7 +315,8 @@ struct Mcp {
 impl Mcp {
     /// Starts `command` in the directory of `sources` and initializes the session. A program
     /// name with no directory is the file of that name in the directory of `sources`, or the
-    /// program of that name on `PATH` when the directory has no such file. The command gets the
+    /// program of that name on `PATH` when the directory has no such file. A relative program
+    /// path with a directory resolves in the directory of `sources`. The command gets the
     /// variables of `env`. The variables that the `env:` references of the other
     /// sources name are removed from its environment. A text of the command that holds 1 of
     /// `secrets` is withheld.
@@ -319,12 +326,13 @@ impl Mcp {
         sources: &Sources,
         secrets: Vec<String>,
     ) -> Result<Self, LoadRefusal> {
-        let local = sources.dir().join(&command[0]);
+        let local = std::path::absolute(sources.dir().join(&command[0]))
+            .map_err(|error| refusal("command", Code::Source, error.to_string()))?;
         let bare = Path::new(&command[0]).components().count() == 1;
-        let mut process = if bare && local.is_file() {
-            Command::new(local)
-        } else {
+        let mut process = if bare && !local.is_file() {
             Command::new(&command[0])
+        } else {
+            Command::new(local)
         };
         process
             .args(&command[1..])

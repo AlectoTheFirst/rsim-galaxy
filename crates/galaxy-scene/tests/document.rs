@@ -885,3 +885,32 @@ fn a_line_of_an_unknown_kind_is_refused_with_the_member_text() {
     ]));
     assert_eq!(after, ["line 3 text: no_end, valid: end as the last line"]);
 }
+
+#[test]
+fn the_refusals_of_format_and_version_come_before_the_other_members_of_a_document() {
+    assert_eq!(
+        refusals(r#"{"format":"other","version":"0.1"}"#),
+        [
+            "document format: format, valid: galaxy-relations",
+            "document source: missing, valid: format, version, source, nodes",
+            "document nodes: missing, valid: format, version, source, nodes",
+        ]
+    );
+    assert_eq!(
+        refusals(r#"{"version":"9.9","nodes":[]}"#),
+        [
+            "document format: missing, valid: format, version, source, nodes",
+            "document version: version, valid: 0.1",
+            "document source: missing, valid: format, version, source, nodes",
+        ]
+    );
+}
+
+#[test]
+fn parse_limited_refuses_a_text_with_more_values_than_the_limit() {
+    let text = r#"{"nodes":[1,2,3]}"#;
+    assert!(Json::parse_limited(text, 5).is_ok());
+    let error = Json::parse_limited(text, 4).unwrap_err();
+    assert_eq!(error.cause, "more values than the limit");
+    assert_eq!(Json::parse_limited(text, 5), Json::parse(text));
+}
