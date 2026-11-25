@@ -6,7 +6,7 @@ use crate::library::{Axis, Colours, Part, Solid, hex, parse_hex};
 use crate::model::{Change, NAME_RULE, RuleTarget};
 use crate::sha256;
 use crate::style::{Light, Lines, Look, Projection, Scheme, Space};
-use crate::world::{Arrangement, Outcome, OutcomeKind};
+use crate::world::{Arrangement, Node, Outcome, OutcomeKind};
 
 /// An operation of the wire form: its name, its description and the JSON schema of its
 /// arguments.
@@ -22,7 +22,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "add_node",
         description: "Add a node",
-        schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Node name","pattern":"^[A-Za-z0-9._-]{1,64}$"},"kind":{"type":"string","description":"Kind"},"in":{"type":"string","description":"Containing node"},"fields":{"type":"object","description":"Source data","maxProperties":64,"propertyNames":{"pattern":"^[A-Za-z0-9._-]{1,64}$"},"additionalProperties":{"type":["string","number","boolean"],"minLength":1,"maxLength":1024}}},"required":["name","kind"]}"#,
+        schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Node name","pattern":"^[A-Za-z0-9._-]{1,64}$"},"kind":{"type":"string","description":"Kind"},"in":{"type":"string","description":"Containing node"},"label":{"type":"string","description":"Label","minLength":1,"maxLength":256},"fields":{"type":"object","description":"Source data","maxProperties":64,"propertyNames":{"pattern":"^[A-Za-z0-9._-]{1,64}$"},"additionalProperties":{"type":["string","number","boolean"],"minLength":1,"maxLength":1024}}},"required":["name","kind"]}"#,
     },
     Tool {
         name: "add_flow",
@@ -32,7 +32,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "set_rule",
         description: "Set the rule of a kind",
-        schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Kind"},"arrangement":{"type":"string","enum":["row","stack","grid","layers"]},"shape":{"type":"string","description":"Shape name","anyOf":[{"enum":["box","cylinder","router","switch","firewall","device","access-point","workstation","cloud","layer3-switch","server","laptop","load-balancer"]},{"pattern":"^[A-Za-z0-9._-]{1,64}$"}]},"size":{"type":"array","description":"Size","items":{"type":"number","exclusiveMinimum":0},"minItems":3,"maxItems":3},"gap":{"type":"number","minimum":0},"margin":{"type":"number","minimum":0}},"required":["kind","arrangement"]}"#,
+        schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Kind"},"arrangement":{"type":"string","enum":["row","stack","grid","layers"]},"shape":{"type":"string","description":"Shape name","anyOf":[{"enum":["box","cylinder","router","switch","firewall","device","access-point","workstation","cloud","layer3-switch","server","laptop","load-balancer"]},{"pattern":"^[A-Za-z0-9._-]{1,64}$"}]},"size":{"type":"array","description":"Size","items":{"type":"number","exclusiveMinimum":0},"minItems":3,"maxItems":3},"gap":{"type":"number","minimum":0},"margin":{"type":"number","minimum":0},"label":{"type":"boolean","description":"Label"}},"required":["kind","arrangement"]}"#,
     },
     Tool {
         name: "set_look",
@@ -149,6 +149,7 @@ pub fn decode(name: &str, arguments: &Json) -> Result<Change, WireRefusal> {
                 None | Some(Json::Null) => None,
                 Some(_) => Some(object_id(arguments, "in")?),
             },
+            label: label(arguments)?,
             fields: fields(arguments)?,
         }),
         "add_flow" => {
@@ -231,6 +232,17 @@ pub fn decode(name: &str, arguments: &Json) -> Result<Change, WireRefusal> {
                 size,
                 gap: number(arguments, "gap", 0.5)?,
                 margin: number(arguments, "margin", 0.5)?,
+                label: match arguments.get("label") {
+                    None => None,
+                    Some(Json::Bool(value)) => Some(*value),
+                    Some(other) => {
+                        return Err(WireRefusal::Value {
+                            field: "label",
+                            value: other.to_string(),
+                            valid: "true, false".to_owned(),
+                        });
+                    }
+                },
             })
         }
         "set_look" => Ok(Change::SetLook {
@@ -346,6 +358,7 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
             id,
             kind,
             parent,
+            label,
             fields,
         } => {
             let mut members = vec![
@@ -354,6 +367,9 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
             ];
             if let Some(parent) = parent {
                 members.push(("in".to_owned(), Json::string(parent.as_str())));
+            }
+            if let Some(label) = label {
+                members.push(("label".to_owned(), Json::string(label.as_str())));
             }
             if !fields.is_empty() {
                 members.push(("fields".to_owned(), fields_json(fields)));
@@ -392,6 +408,7 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
             size,
             gap,
             margin,
+            label,
         } => {
             let kind = match target {
                 RuleTarget::Root => "root",
@@ -419,6 +436,9 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
                 ("gap".to_owned(), Json::Number(*gap)),
                 ("margin".to_owned(), Json::Number(*margin)),
             ]);
+            if let Some(label) = label {
+                members.push(("label".to_owned(), Json::Bool(*label)));
+            }
             ("set_rule", Json::Object(members))
         }
         Change::SetLook { look } => (
@@ -627,6 +647,26 @@ fn text<'a>(arguments: &'a Json, field: &'static str) -> Result<&'a str, WireRef
             field,
             expected: "string",
         })
+}
+
+/// The argument `label` of `add_node`, a string of 1 to 256 characters. A refusal of the length
+/// gives the count of characters.
+fn label(arguments: &Json) -> Result<Option<String>, WireRefusal> {
+    let [fewest, most] = Node::LABEL;
+    match arguments.get("label") {
+        None => Ok(None),
+        Some(Json::String(text)) if Node::valid_label(text) => Ok(Some(text.clone())),
+        Some(Json::String(text)) => Err(WireRefusal::Value {
+            field: "label",
+            value: format!("{} characters", text.chars().count()),
+            valid: format!("{fewest} to {most} characters"),
+        }),
+        Some(other) => Err(WireRefusal::Value {
+            field: "label",
+            value: other.to_string(),
+            valid: "string".to_owned(),
+        }),
+    }
 }
 
 /// The argument `kind`, a string of 1 or more characters.

@@ -5,7 +5,9 @@ use crate::document::Load;
 use crate::id::ObjectId;
 use crate::library::{Colours, DefinedShape, Library, Material, Part, Solid};
 use crate::style::{Look, Style};
-use crate::world::{Arrangement, Outcome, RelationRefusal, Relations, Rule, Shape, Vec3, World};
+use crate::world::{
+    Arrangement, Node, Outcome, RelationRefusal, Relations, Rule, Shape, Vec3, World,
+};
 
 /// The rule that a `SetRule` sets.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -25,6 +27,7 @@ pub enum Change {
         id: ObjectId,
         kind: String,
         parent: Option<ObjectId>,
+        label: Option<String>,
         fields: Vec<(String, String)>,
     },
     AddFlow {
@@ -33,8 +36,8 @@ pub enum Change {
         outcome: Option<Outcome>,
         fields: Vec<(String, String)>,
     },
-    /// Sets the rule of `target`. `shape` is the name of a built-in or a defined shape. `None`
-    /// keeps the shape of the rule that `target` has.
+    /// Sets the rule of `target`. `shape` is the name of a built-in or a defined shape. A `shape`
+    /// or a `label` of `None` keeps the value of the rule that `target` has.
     SetRule {
         target: RuleTarget,
         arrangement: Arrangement,
@@ -42,6 +45,7 @@ pub enum Change {
         size: Vec3,
         gap: f64,
         margin: f64,
+        label: Option<bool>,
     },
     SetLook {
         look: Look,
@@ -172,11 +176,21 @@ impl Model {
                 id,
                 kind,
                 parent,
+                label,
                 fields,
             } => {
                 check_kind(kind)?;
+                if let Some(label) = label {
+                    check_label(label)?;
+                }
                 Arc::make_mut(&mut self.relations)
-                    .add_with_fields(id.clone(), kind, parent.clone(), fields.clone())
+                    .add_node(Node {
+                        id: id.clone(),
+                        kind: kind.clone(),
+                        parent: parent.clone(),
+                        label: label.clone(),
+                        fields: fields.clone(),
+                    })
                     .map_err(ChangeRefusal::Relation)?
             }
             Change::AddFlow {
@@ -194,6 +208,7 @@ impl Model {
                 size,
                 gap,
                 margin,
+                label,
             } => {
                 let rules = &mut self.style.rules;
                 let current = match target {
@@ -214,6 +229,7 @@ impl Model {
                     size: *size,
                     gap: *gap,
                     margin: *margin,
+                    label: label.unwrap_or(current.label),
                 };
                 check(&rule, target == &RuleTarget::Root)?;
                 match target {
@@ -324,6 +340,19 @@ fn check_kind(kind: &str) -> Result<(), ChangeRefusal> {
     if kind == "root" || kind == "default" {
         return Err(ChangeRefusal::Kind {
             kind: kind.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Refuses a label of fewer than 1 or more than 256 characters with its count of characters.
+fn check_label(label: &str) -> Result<(), ChangeRefusal> {
+    if !Node::valid_label(label) {
+        let [fewest, most] = Node::LABEL;
+        return Err(ChangeRefusal::Value {
+            field: "label".to_owned(),
+            value: format!("{} characters", label.chars().count()),
+            valid: format!("{fewest} to {most} characters"),
         });
     }
     Ok(())

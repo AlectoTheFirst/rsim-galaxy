@@ -525,6 +525,7 @@ fn refused_change_changes_nothing_and_names_the_cause() {
                 size: [1.0; 3],
                 gap: 0.5,
                 margin: 0.5,
+                label: None,
             },
             "kind: default, valid: a name other than root and default",
         ),
@@ -542,12 +543,168 @@ fn refused_change_changes_nothing_and_names_the_cause() {
             size: [0.0; 3],
             gap: 1.0,
             margin: f64::NAN,
+            label: None,
         }),
         Err(ChangeRefusal::Range {
             field: "margin",
             ..
         })
     ));
+}
+
+#[test]
+fn add_node_with_a_label_gives_the_node_its_label_and_undo_removes_it() {
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    let before = model.clone();
+    let change = call(
+        "add_node",
+        r#"{"name":"core-01","kind":"router","in":"site-a","label":"Core 01 é"}"#,
+    )
+    .unwrap();
+    let (name, arguments) = wire::encode(&change);
+    assert_eq!(
+        arguments.to_string(),
+        r#"{"name":"core-01","kind":"router","in":"site-a","label":"Core 01 é"}"#
+    );
+    assert_eq!(call(name, &arguments.to_string()).unwrap(), change);
+    model.apply(change.clone()).unwrap();
+    let node = model.relations().nodes().last().unwrap();
+    assert_eq!(node.label.as_deref(), Some("Core 01 é"));
+    let world = model.world();
+    let index = world.index(&id("core-01")).unwrap();
+    assert_eq!(world.label(index), Some("Core 01 é"));
+    assert_eq!(world.label(world.index(&id("dns")).unwrap()), Some("dns"));
+    assert_eq!(model.undo(), Some(change));
+    assert_eq!(model, before);
+}
+
+#[test]
+fn refused_label_changes_nothing_and_names_the_valid_values() {
+    let long = "é".repeat(257);
+    let cases = [
+        (
+            r#"{"name":"r1","kind":"router","label":""}"#.to_owned(),
+            "label: 0 characters, valid: 1 to 256 characters".to_owned(),
+        ),
+        (
+            format!(r#"{{"name":"r1","kind":"router","label":"{long}"}}"#),
+            "label: 257 characters, valid: 1 to 256 characters".to_owned(),
+        ),
+        (
+            r#"{"name":"r1","kind":"router","label":5}"#.to_owned(),
+            "label: 5, valid: string".to_owned(),
+        ),
+    ];
+    for (arguments, text) in cases {
+        assert_eq!(
+            call("add_node", &arguments).unwrap_err().to_string(),
+            text,
+            "{arguments}"
+        );
+    }
+    assert!(
+        call(
+            "add_node",
+            &format!(
+                r#"{{"name":"r1","kind":"router","label":"{}"}}"#,
+                "é".repeat(256)
+            )
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        call(
+            "set_rule",
+            r#"{"kind":"router","arrangement":"row","label":"no"}"#
+        )
+        .unwrap_err()
+        .to_string(),
+        r#"label: "no", valid: true, false"#
+    );
+
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    let before = model.clone();
+    for (label, text) in [
+        (
+            String::new(),
+            "label: 0 characters, valid: 1 to 256 characters".to_owned(),
+        ),
+        (
+            long.clone(),
+            "label: 257 characters, valid: 1 to 256 characters".to_owned(),
+        ),
+    ] {
+        let refusal = model
+            .apply(Change::AddNode {
+                id: id("r1"),
+                kind: "router".to_owned(),
+                parent: None,
+                label: Some(label),
+                fields: Vec::new(),
+            })
+            .unwrap_err();
+        assert_eq!(refusal.to_string(), text);
+        assert_eq!(model, before);
+    }
+}
+
+#[test]
+fn set_rule_with_label_false_gives_no_label_and_a_rule_with_no_label_keeps_the_value() {
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    assert!(model.style().rules.kinds.values().all(|rule| rule.label));
+    assert!(model.style().rules.default.label);
+    let client = model.world().index(&id("client")).unwrap();
+    for (arguments, label, text) in [
+        (
+            r#"{"kind":"endpoint","arrangement":"row","label":false}"#,
+            false,
+            None,
+        ),
+        (
+            r#"{"kind":"endpoint","arrangement":"row","size":[2,1,1]}"#,
+            false,
+            None,
+        ),
+        (
+            r#"{"kind":"endpoint","arrangement":"row","label":true}"#,
+            true,
+            Some("client"),
+        ),
+        (
+            r#"{"kind":"endpoint","arrangement":"stack"}"#,
+            true,
+            Some("client"),
+        ),
+    ] {
+        let change = call("set_rule", arguments).unwrap();
+        let (name, encoded) = wire::encode(&change);
+        assert_eq!(call(name, &encoded.to_string()).unwrap(), change);
+        assert_eq!(
+            encoded.get("label").is_some(),
+            arguments.contains("label"),
+            "{arguments}"
+        );
+        model.apply(change).unwrap();
+        assert_eq!(
+            model.style().rules.kinds["endpoint"].label,
+            label,
+            "{arguments}"
+        );
+        assert_eq!(model.world().label(client), text, "{arguments}");
+    }
+    model
+        .apply(
+            call(
+                "set_rule",
+                r#"{"kind":"default","arrangement":"row","label":false}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    model
+        .apply(call("set_rule", r#"{"kind":"hub","arrangement":"row"}"#).unwrap())
+        .unwrap();
+    assert!(!model.style().rules.kinds["hub"].label);
 }
 
 #[test]

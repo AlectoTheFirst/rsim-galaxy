@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use galaxy_scene::{
-    Arrangement, Broken, Library, ObjectId, RelationRefusal, Relations, Rule, RuleSet, Shape,
+    Arrangement, Broken, Library, Node, ObjectId, RelationRefusal, Relations, Rule, RuleSet, Shape,
     Style, World,
 };
 
@@ -16,6 +16,7 @@ fn rule(arrangement: Arrangement, size: [f64; 3]) -> Rule {
         size,
         gap: 0.5,
         margin: 0.5,
+        label: true,
     }
 }
 
@@ -185,6 +186,40 @@ fn world_text_has_one_line_for_each_node_in_name_order() {
          b endpoint in=group at=-0.75,1,0 size=1,1,1\n\
          group group at=0,1,0 size=3.5,2,2\n"
     );
+}
+
+#[test]
+fn world_text_has_the_label_of_a_node_with_a_label_and_none_for_a_node_with_none() {
+    let mut relations = relations(&[("group", "group", None)]);
+    for (name, label) in [("a", Some("Core \"A\" é")), ("b", None)] {
+        relations
+            .add_node(Node {
+                id: id(name),
+                kind: "endpoint".to_owned(),
+                parent: Some(id("group")),
+                label: label.map(str::to_owned),
+                fields: vec![("ip".to_owned(), "192.0.2.1".to_owned())],
+            })
+            .unwrap();
+    }
+    let mut rules = rules();
+    let world = World::expand(&relations, &rules);
+    assert_eq!(
+        world.describe(),
+        "a endpoint in=group label=\"Core \\\"A\\\" é\" at=-0.75,1,0 size=1,1,1 ip=\"192.0.2.1\"\n\
+         b endpoint in=group at=0.75,1,0 size=1,1,1 ip=\"192.0.2.1\"\n\
+         group group at=0,1,0 size=3.5,2,2\n"
+    );
+    let index = |name: &str| world.index(&id(name)).unwrap();
+    assert_eq!(world.label(index("a")), Some("Core \"A\" é"));
+    assert_eq!(world.label(index("b")), Some("b"));
+    assert_eq!(world.label(index("group")), Some("group"));
+
+    rules.default.label = false;
+    let hidden = World::expand(&relations, &rules);
+    assert_eq!(hidden.label(index("a")), None);
+    assert_eq!(hidden.label(index("b")), None);
+    assert_eq!(hidden.describe(), world.describe());
 }
 
 #[test]

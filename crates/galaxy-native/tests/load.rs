@@ -110,10 +110,7 @@ fn load_over_mcp_gives_the_answer_and_keeps_the_bytes() {
         answer.get("source").unwrap().get("snapshot"),
         Some(&Json::string("snapshot-2026-11-23-120000"))
     );
-    assert_eq!(
-        answer.get("not_shown"),
-        Some(&Json::Array(vec![Json::string("node.label")]))
-    );
+    assert_eq!(answer.get("not_shown"), Some(&Json::Array(Vec::new())));
     assert!(!reply.text.contains("192.0.2."));
     assert_eq!(viewer.world.flows().len(), 3);
     assert_eq!(viewer.model.log().len(), 1);

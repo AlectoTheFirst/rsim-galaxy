@@ -1,6 +1,7 @@
 //! Builds an estate of 100 sites with 4 rooms each, 25 routers and 125 endpoints in each room,
-//! and 1,000 flows, then prints the time of the expansion and of the frames at 2560 by 1440
-//! pixels from the home view, from a view of 1 site and from a view of 1 room.
+//! and 1,000 flows, then prints the time of the expansion, of the frames and of the label pass at
+//! 2560 by 1440 pixels from the home view, from a view of 1 site and from a view of 1 room, with
+//! the counts of the shown and the hidden labels.
 
 use std::time::Instant;
 
@@ -101,6 +102,18 @@ fn frames(renderer: &Renderer, view: &View, label: &str) -> Result<(), Box<dyn s
         renderer.count(view, WIDTH, HEIGHT),
         frame.as_secs_f64() * 1000.0
     );
+    let start = Instant::now();
+    for _ in 0..FRAMES {
+        renderer.labels(view, WIDTH, HEIGHT);
+    }
+    let pass = start.elapsed() / FRAMES;
+    let labels = renderer.labels(view, WIDTH, HEIGHT);
+    println!(
+        "{label}: {} labels shown, {} hidden, {:.3} ms for each label pass",
+        labels.shown.len(),
+        labels.hidden.len(),
+        pass.as_secs_f64() * 1000.0
+    );
     Ok(())
 }
 
@@ -145,6 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             selection: None,
             camera: &camera,
             details: &[],
+            scale: 1.0,
         };
         frames(&renderer, &view, label)?;
     }

@@ -13,7 +13,7 @@ The Cargo workspace has 3 crates, `galaxy-scene`, `galaxy-render` and `galaxy-na
 
 Complete:
 
-- the relations: nodes with a kind, a parent and the data of the source, and flows with their path, their outcome and the data of the source
+- the relations: nodes with a kind, a parent, a label and the data of the source, and flows with their path, their outcome and the data of the source
 - the rule set with the arrangements row, stack, grid and layers, the order of each column of the arrangement layers that reduces the crossings of the flows, and the shapes box, cylinder, router, switch, firewall, device, access-point, workstation, cloud, layer3-switch, server, laptop and load-balancer, and the expansion that gives each node a box
 - the library: the operation define_shape with the parts box, cylinder and prism in the unit box of the shape and the symbol, the operation set_material with the built-in materials and up to 64 materials, up to 64 defined shapes with a vertex budget of 1,000,000 for the library, and the rules that name a defined shape
 - the flow lines through the doors and the corridors of the containers of their path, with the corridor of a stack beside its children, the line between 2 adjacent containers of a row through their facing sides, and the wires of the arrangement layers on the floor through the gaps and the free stretches of the columns
@@ -21,6 +21,7 @@ Complete:
 - the check of a world for a child outside its parent, for siblings that intersect and for a flow line through a node off its path
 - the style: the rule set and the look
 - the operations add node, add flow, set rule, set look, define shape, set material and clear, with the refusals, the log, undo and replay
+- the label of a node from `add_node` and from `node.label` of a load, the id as the label of a node with no label, `label` of `set_rule` for each kind, and the label in the world text
 - the load: the reader of a relations document and of a stream of joined pages with the checks, the limits and the versions of the format, the framing of the pages with the place of each line, the first 20 refusals in the order of the document, the members of a document in the order of the text, the answer with the source, the counts, the kinds, the unit, partial, ignored by the name rule up to 64 names and not_shown, the load as 1 entry of the log with undo of the whole load, the wire form `load_view` with the `sha256` of the bytes, and SHA-256
 - the wire form with a JSON schema for each operation, and the refusal of a JSON object with a member name 2 times, of a `\u` escape with no 4 hex digits, of a field name outside the name rule, of more than 64 fields and of a text value of a field outside 1 to 1024 characters
 - the scene of the primitives globe, building, arc and label with its operations and its log
@@ -51,12 +52,14 @@ Complete:
 - the edges of the open nodes behind the nodes and the lines in them
 - the meshes of the defined shapes from their parts, built again when the library changes, and the material table with the colours of set_material for up to 64 materials, with the colour of the body
 - the shading with sky light, edge bands, contact shade and highlight, and the floor shadows
-- the panel of the selection with the data of the source, in the freest corner of the frame, in Inter and JetBrains Mono from a glyph atlas
+- the panel of the selection with the data of the source, in the freest corner of the frame, in Inter and JetBrains Mono from the distance-field atlas
+- the labels of the nodes: the place at each detail state, JetBrains Mono at 600 with a halo, the selection colour of the selected node, the priority order, the greedy placement with the overlap grid, no label cut by the frame, the limits of the candidates and the glyphs, and the scene text of the shown and the hidden labels
+- the signed distance-field atlas of the glyphs from the coverage of `ab_glyph` by 8SSEDT, cleared when it is full
+- the scale factor of the window for the labels, the panel and the compass
 - the pick of the object at a pixel, and the edges of the selected object in the selection colour
 
 Open:
 
-- the labels of the nodes in the scene
 - the dashed line of a reply
 - the blend between 2 detail states
 - cast shadows and ambient occlusion
@@ -66,9 +69,10 @@ Open:
 
 Complete:
 
-- the desktop window with the camera and the selection, with the panel of the selected object
+- the desktop window with the camera and the selection, with the panel of the selected object and its line `label`, and the scale factor of the window for the labels, the panel and the compass
 - the MCP server with the tools of the wire form and the tools undo, describe, frame and sources
 - the operation file, the frame with no window and the operation log as an operation file
+- the label lines of a frame in the text of the tool `frame` and on the standard error of `--png`
 - the configuration of the sources with its checks and the credential references `env:` and `file:`
 - `load_view` over the MCP transport with pages and from a file, the answer to `ping` and the refusal of each other request of the source, the limits of the pages, the lines and the cursor, the limits of a `.json` and a `.jsonl` file before it is read, a `.json` file as a document and a `.jsonl` file as a stream, the command of a source in the directory of the configuration, the kept bytes in `galaxy-documents` as sent, the replay of a load from the kept bytes for a source of the configuration, and the refusals of the arguments, no_source, source, credential and line
 - the check of the credential in the bytes, in the decoded JSON strings and in the shown texts of a document, and in the whole text of a refusal of the source
