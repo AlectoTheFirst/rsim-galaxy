@@ -220,7 +220,7 @@ Before a change is done, read each new or changed text of the change against thi
 - In the window, a drag turns the camera around its target, the wheel moves it nearer or farther within 1/1000 to 1000 times the distance of the home view, and Home gives the home view. A click selects the object below the pointer and shows its panel with the data of the source.
 - `src/bin/galaxy-fixture.rs` is the MCP source of the tests of the load. It serves `galaxy_relations` on MCP with the documents of a directory and a stream in pages. The tests are in `crates/galaxy-native/tests/`: `load.rs`, `credential.rs` and `viewer.rs`, with the documents of the fixture in `tests/documents/`. `.mcp.json` registers the viewport as the MCP server `galaxy`. `examples/packet-flow.jsonl` is an operation file.
 
-CI is in `.github/workflows/ci.yml`. For each pull request and each push to `main`, it runs the format check, clippy and the tests on Linux `amd64`. It does not run for a change of only Markdown files.
+CI is in `.github/workflows/ci.yml`. For each pull request and each push to `main`, it runs the format check, clippy and the tests on Linux `amd64`. The job `check` is a required check of the ruleset of `main`. `.github/dependabot.yml` asks for weekly version updates of the cargo dependencies and the GitHub actions.
 
 ## Status
 
