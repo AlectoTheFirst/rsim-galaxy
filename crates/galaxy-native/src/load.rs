@@ -111,8 +111,8 @@ fn no_source(sources: Option<&Sources>) -> LoadRefusal {
 }
 
 /// `true` when a text that a read load shows holds 1 of `credentials`: the answer, the names,
-/// the kinds, the parents, the paths, the outcomes and the fields of the relations, or the text
-/// and the refused value of each refusal.
+/// the kinds, the parents, the labels, the paths, the outcomes and the fields of the relations,
+/// or the text and the refused value of each refusal.
 fn holds_credential(read: &Result<Load, Vec<LoadRefusal>>, credentials: &[String]) -> bool {
     if credentials.is_empty() {
         return false;
@@ -126,6 +126,9 @@ fn holds_credential(read: &Result<Load, Vec<LoadRefusal>>, credentials: &[String
                 text.push_str(&format!("\n{} {}", node.id, node.kind));
                 if let Some(parent) = &node.parent {
                     text.push_str(&format!(" {parent}"));
+                }
+                if let Some(label) = &node.label {
+                    text.push_str(&format!(" {label}"));
                 }
                 for (name, value) in &node.fields {
                     text.push_str(&format!(" {name} {value}"));

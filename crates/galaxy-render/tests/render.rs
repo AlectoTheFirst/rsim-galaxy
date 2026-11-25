@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
+use galaxy_render::label::{Cause, Labels};
 use galaxy_render::{Camera, Image, Renderer, Selection, View};
 use galaxy_scene::{
-    Arrangement, Axis, Colours, DefinedShape, Library, Lines, Look, ObjectId, Outcome, OutcomeKind,
-    Part, Projection, Relations, Rule, RuleSet, Scheme, Shape, Solid, Space, World,
+    Arrangement, Axis, Colours, DefinedShape, Library, Lines, Look, Node, ObjectId, Outcome,
+    OutcomeKind, Part, Projection, Relations, Rule, RuleSet, Scheme, Shape, Solid, Space, World,
 };
 
 const WIDTH: u32 = 320;
@@ -21,6 +22,7 @@ fn world() -> World {
         size,
         gap: 0.5,
         margin: 0.5,
+        label: true,
     };
     let rules = RuleSet {
         root: rule(Arrangement::Row, [0.0; 3]),
@@ -69,8 +71,18 @@ fn render(renderer: &Renderer, look: &Look, selection: Option<&Selection>) -> Im
         selection,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
+}
+
+/// The count of the pixels with each channel below 0xA0.
+fn inked(image: &Image) -> usize {
+    image
+        .rgba
+        .chunks(4)
+        .filter(|pixel| pixel[..3].iter().all(|&channel| channel < 0xA0))
+        .count()
 }
 
 fn count(image: &Image, rgb: [u8; 3]) -> usize {
@@ -174,6 +186,7 @@ fn pick_at_the_pixel_of_a_node_gives_the_node_or_an_ancestor_in_each_projection(
             selection: None,
             camera: &camera,
             details: &[],
+            scale: 1.0,
         };
         for name in ["client", "dns"] {
             let [x, y] = pixel_of(&world, &look, name);
@@ -221,6 +234,7 @@ fn far_camera_draws_the_site_as_1_closed_box_with_no_flow() {
         selection: None,
         camera,
         details: &[],
+        scale: 1.0,
     };
     let near_count = renderer.count(&view(&home), WIDTH, HEIGHT);
     let far_count = renderer.count(&view(&far), WIDTH, HEIGHT);
@@ -247,11 +261,11 @@ fn panel_of_the_selection_shows_its_lines_in_the_text_colour() {
             selection: Some(&selection),
             camera: &camera,
             details,
+            scale: 1.0,
         };
         renderer.render(&view, WIDTH, HEIGHT).unwrap()
     };
-    let text = [0x15, 0x19, 0x1F];
-    let (without, with) = (count(&frame(&[]), text), count(&frame(&details), text));
+    let (without, with) = (inked(&frame(&[])), inked(&frame(&details)));
     assert!(with > without + 50, "{without} {with}");
 }
 
@@ -272,6 +286,7 @@ fn node_of_a_cylinder_kind_leaves_the_corners_of_its_box_empty() {
                 size: [0.0; 3],
                 gap: 0.5,
                 margin: 0.5,
+                label: true,
             },
             default: Rule {
                 arrangement: Arrangement::Row,
@@ -279,6 +294,7 @@ fn node_of_a_cylinder_kind_leaves_the_corners_of_its_box_empty() {
                 size: [2.0, 1.0, 2.0],
                 gap: 0.5,
                 margin: 0.5,
+                label: true,
             },
             kinds: BTreeMap::new(),
         };
@@ -292,6 +308,7 @@ fn node_of_a_cylinder_kind_leaves_the_corners_of_its_box_empty() {
             selection: None,
             camera: &camera,
             details: &[],
+            scale: 1.0,
         };
         count(&renderer.render(&view, WIDTH, HEIGHT).unwrap(), surface)
     };
@@ -327,6 +344,7 @@ fn node_frame(
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -348,6 +366,7 @@ fn node_world(shape: Shape, size: [f64; 3], library: Library) -> World {
         size,
         gap: 0.5,
         margin: 0.5,
+        label: true,
     };
     let rules = RuleSet {
         root: rule(Shape::Box, [0.0; 3]),
@@ -429,6 +448,7 @@ fn pick_at_the_centre_of_a_node_of_a_defined_shape_gives_the_node() {
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     assert_eq!(
         renderer
@@ -519,6 +539,7 @@ fn cap_of_a_cylinder_has_the_light_of_the_top_of_a_box_at_its_centre() {
             size,
             gap: 0.5,
             margin: 0.5,
+            label: true,
         };
         let rules = RuleSet {
             root: rule(Shape::Box, [0.0; 3]),
@@ -535,6 +556,7 @@ fn cap_of_a_cylinder_has_the_light_of_the_top_of_a_box_at_its_centre() {
             selection: None,
             camera: &camera,
             details: &[],
+            scale: 1.0,
         };
         let [x, y] = camera
             .project(&look, [0.0, 0.4, 0.0], WIDTH, HEIGHT)
@@ -561,6 +583,7 @@ fn pair(outcomes: &[Option<OutcomeKind>]) -> World {
         size,
         gap: 2.0,
         margin: 1.0,
+        label: true,
     };
     let rules = RuleSet {
         root: rule([0.0; 3]),
@@ -593,6 +616,7 @@ fn frame(renderer: &Renderer, world: &World, look: &Look) -> Image {
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -635,6 +659,7 @@ fn selected_flow_keeps_the_colour_of_its_outcome_inside_a_halo() {
         selection: Some(&selection),
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let plain = frame(&renderer, &world, &look);
@@ -709,6 +734,7 @@ fn line_of_a_dropped_flow_ends_in_a_stop_mark_clear_of_its_last_node() {
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let [x, y] = camera.project(&look, top, WIDTH, HEIGHT).unwrap();
@@ -766,6 +792,7 @@ fn flow_line_past_the_camera_keeps_its_width_near_the_camera() {
         size,
         gap,
         margin: 0.5,
+        label: true,
     };
     let rules = RuleSet {
         root: rule([0.0; 3], 40.0),
@@ -795,6 +822,7 @@ fn flow_line_past_the_camera_keeps_its_width_near_the_camera() {
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let line = count(&image, [0x00, 0x6C, 0x78]);
@@ -854,6 +882,7 @@ fn node_from(renderer: &Renderer, shape: Shape, size: [f64; 3], direction: [f32;
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     renderer.render(&view, 1600, 1000).unwrap()
 }
@@ -893,6 +922,7 @@ fn stack() -> World {
         size,
         gap: 1.0,
         margin: 0.2,
+        label: true,
     };
     let rules = RuleSet {
         root: rule(Arrangement::Row, Shape::Box, [0.0; 3]),
@@ -926,6 +956,7 @@ fn seen(renderer: &Renderer, world: &World, eye: [f64; 3], target: [f64; 3]) -> 
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -981,6 +1012,7 @@ fn through(shape: Shape, size: [f64; 3], gap: f64) -> World {
         size,
         gap,
         margin: 0.5,
+        label: true,
     };
     let rules = RuleSet {
         root: rule(Shape::Box, [0.0; 3]),
@@ -1041,6 +1073,7 @@ fn open_node_of_the_cloud_shape_is_the_outline_of_its_cloud_with_no_floor_plate(
             size,
             gap: 0.5,
             margin: 0.5,
+            label: true,
         };
         let rules = RuleSet {
             root: rule(Shape::Box, [0.0; 3]),
@@ -1068,6 +1101,7 @@ fn open_node_of_the_cloud_shape_is_the_outline_of_its_cloud_with_no_floor_plate(
             selection: None,
             camera: &camera,
             details: &[],
+            scale: 1.0,
         };
         renderer.count(&view, WIDTH, HEIGHT)
     });
@@ -1128,6 +1162,7 @@ fn plate(library: Library, child: bool) -> World {
         size,
         gap: 0.5,
         margin: 0.5,
+        label: true,
     };
     let rules = RuleSet {
         root: rule(Shape::Box, [0.0; 3]),
@@ -1195,4 +1230,358 @@ fn symbol_of_a_defined_shape_keeps_its_aspect_at_the_rule_size_and_on_a_node_of_
         let ratio = from_above(world) / expected;
         assert!((ratio - 1.0).abs() < 0.1, "{name} {ratio}");
     }
+}
+
+/// Nodes with no parent in a row with a gap of 0.2: each name with its kind and its own label.
+/// The kind big has the size 1.25, and each other kind the size 1.
+fn labelled(nodes: &[(&str, &str, Option<&str>)], shown: bool) -> World {
+    let rule = |size: f64| Rule {
+        arrangement: Arrangement::Row,
+        shape: Shape::Box,
+        size: [size; 3],
+        gap: 0.2,
+        margin: 0.2,
+        label: shown,
+    };
+    let rules = RuleSet {
+        root: rule(0.0),
+        default: rule(1.0),
+        kinds: BTreeMap::from([("big".to_owned(), rule(1.25))]),
+    };
+    let mut relations = Relations::new();
+    for (name, kind, label) in nodes {
+        relations
+            .add_node(Node {
+                id: id(name),
+                kind: (*kind).to_owned(),
+                parent: None,
+                label: label.map(str::to_owned),
+                fields: Vec::new(),
+            })
+            .unwrap();
+    }
+    World::expand(&relations, &rules)
+}
+
+fn isometric() -> Look {
+    Look {
+        projection: Projection::Isometric,
+        ..flat()
+    }
+}
+
+/// The isometric camera from the front and above the middle of the nodes with no parent, with
+/// `per_unit` pixels for 1 unit, moved by `shift` pixels to the right.
+fn front(world: &World, per_unit: f32, shift: f32) -> Camera {
+    let mut low = [f32::MAX; 3];
+    let mut high = [f32::MIN; 3];
+    for &index in world.top() {
+        let (_, placed, _) = world.node(index);
+        for axis in 0..3 {
+            low[axis] = low[axis].min((placed.centre[axis] - placed.size[axis] / 2.0) as f32);
+            high[axis] = high[axis].max((placed.centre[axis] + placed.size[axis] / 2.0) as f32);
+        }
+    }
+    let mut target: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) / 2.0);
+    target[0] -= shift / per_unit;
+    let fov_y_degrees = 40.0_f32;
+    let distance = HEIGHT as f32 / (2.0 * (fov_y_degrees.to_radians() / 2.0).tan() * per_unit);
+    let direction = [0.0, 0.35, 1.0_f32];
+    let length = direction
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    Camera {
+        eye: std::array::from_fn(|axis| target[axis] + direction[axis] / length * distance),
+        target,
+        fov_y_degrees,
+    }
+}
+
+fn labels_of(
+    renderer: &Renderer,
+    world: &World,
+    camera: &Camera,
+    selection: Option<&Selection>,
+    scale: f32,
+) -> Labels {
+    let look = isometric();
+    let view = View {
+        world,
+        look: &look,
+        selection,
+        camera,
+        details: &[],
+        scale,
+    };
+    renderer.labels(&view, WIDTH, HEIGHT)
+}
+
+fn named(labels: &Labels) -> (Vec<&str>, Vec<String>) {
+    (
+        labels
+            .shown
+            .iter()
+            .map(|shown| shown.node.as_str())
+            .collect(),
+        labels.hidden.iter().map(ToString::to_string).collect(),
+    )
+}
+
+/// Pixels for 1 unit that give a unit cube `size` pixels on the screen.
+fn per_unit(size: f32) -> f32 {
+    size / 3.0_f32.sqrt()
+}
+
+#[test]
+fn label_shows_on_a_leaf_of_48_pixels_and_not_on_a_leaf_of_40_pixels() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(&[("leaf", "device", None)], true);
+    let near = front(&world, per_unit(48.5), 0.0);
+    let far = front(&world, per_unit(40.0), 0.0);
+    let labels = labels_of(&renderer, &world, &near, None, 1.0);
+    assert_eq!(named(&labels), (vec!["leaf"], Vec::new()));
+    assert_eq!(labels.lines(), vec!["labels shown=1 hidden=0".to_owned()]);
+    let [left, top, right, bottom] = labels.shown[0].rect;
+    assert_eq!(bottom - top, 20.0);
+    assert!(((left + right) / 2.0 - WIDTH as f32 / 2.0).abs() < 1.5);
+    assert_eq!(
+        labels_of(&renderer, &world, &far, None, 1.0),
+        Labels::default()
+    );
+    let image = |camera: &Camera| {
+        let look = isometric();
+        let view = View {
+            world: &world,
+            look: &look,
+            selection: None,
+            camera,
+            details: &[],
+            scale: 1.0,
+        };
+        renderer.render(&view, WIDTH, HEIGHT).unwrap()
+    };
+    let dark = |image: &Image| {
+        (top as u32..bottom as u32)
+            .flat_map(|y| (left as u32..right as u32).map(move |x| (x, y)))
+            .filter(|&(x, y)| image.pixel(x, y)[..3].iter().all(|&channel| channel < 128))
+            .count()
+    };
+    let shown = dark(&image(&near));
+    assert!(shown > 4, "{shown}");
+    assert_eq!(dark(&image(&far)), 0);
+}
+
+#[test]
+fn of_2_overlapping_labels_the_larger_shows_and_the_selected_wins_over_the_larger() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(
+        &[
+            ("small", "device", Some("a-long-label-of-small")),
+            ("big", "big", Some("a-long-label-of-big")),
+        ],
+        true,
+    );
+    let camera = front(&world, 30.0, 0.0);
+    let labels = labels_of(&renderer, &world, &camera, None, 1.0);
+    assert_eq!(
+        named(&labels),
+        (
+            vec!["big"],
+            vec!["label small hidden overlap=big".to_owned()]
+        )
+    );
+    assert_eq!(labels.hidden[0].cause, Cause::Overlap(id("big")));
+    let selected = Selection::Node(id("small"));
+    let labels = labels_of(&renderer, &world, &camera, Some(&selected), 1.0);
+    assert_eq!(
+        named(&labels),
+        (
+            vec!["small"],
+            vec!["label big hidden overlap=small".to_owned()]
+        )
+    );
+}
+
+#[test]
+fn two_renders_of_1_view_give_the_same_pixels_and_the_same_labels() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(
+        &[
+            ("small", "device", Some("a-long-label-of-small")),
+            ("big", "big", None),
+            ("other", "device", None),
+        ],
+        true,
+    );
+    let camera = front(&world, 30.0, 0.0);
+    let look = isometric();
+    let selected = Selection::Node(id("small"));
+    let view = View {
+        world: &world,
+        look: &look,
+        selection: Some(&selected),
+        camera: &camera,
+        details: &[],
+        scale: 1.0,
+    };
+    let first = renderer.render(&view, WIDTH, HEIGHT).unwrap();
+    let labels = renderer.labels(&view, WIDTH, HEIGHT);
+    assert!(!labels.shown.is_empty());
+    assert_eq!(renderer.render(&view, WIDTH, HEIGHT).unwrap(), first);
+    assert_eq!(renderer.labels(&view, WIDTH, HEIGHT), labels);
+    let other = Renderer::new().unwrap();
+    assert_eq!(other.labels(&view, WIDTH, HEIGHT), labels);
+    assert_eq!(other.render(&view, WIDTH, HEIGHT).unwrap(), first);
+    assert!(count(&first, [0x2A, 0x52, 0xD6]) > 0);
+}
+
+#[test]
+fn label_partly_outside_the_frame_is_not_named() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(
+        &[("edge", "device", Some("a-long-label-at-the-edge"))],
+        true,
+    );
+    let inside = front(&world, 30.0, 0.0);
+    assert_eq!(
+        named(&labels_of(&renderer, &world, &inside, None, 1.0)).0,
+        vec!["edge"]
+    );
+    let cut = front(&world, 30.0, -(WIDTH as f32) / 2.0 + 30.0);
+    assert_eq!(
+        labels_of(&renderer, &world, &cut, None, 1.0),
+        Labels::default()
+    );
+}
+
+#[test]
+fn rule_with_label_false_gives_no_label() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(
+        &[("leaf", "device", Some("own")), ("plain", "device", None)],
+        false,
+    );
+    let camera = front(&world, 40.0, 0.0);
+    assert_eq!(
+        labels_of(&renderer, &world, &camera, None, 1.0),
+        Labels::default()
+    );
+}
+
+#[test]
+fn label_sizes_and_the_size_to_show_a_label_scale_with_the_scale_factor() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(&[("leaf", "device", None)], true);
+    let camera = front(&world, per_unit(60.0), 0.0);
+    assert_eq!(
+        named(&labels_of(&renderer, &world, &camera, None, 1.0)).0,
+        vec!["leaf"]
+    );
+    assert_eq!(
+        labels_of(&renderer, &world, &camera, None, 2.0),
+        Labels::default()
+    );
+    let camera = front(&world, per_unit(100.0), 0.0);
+    let one = labels_of(&renderer, &world, &camera, None, 1.0);
+    let two = labels_of(&renderer, &world, &camera, None, 2.0);
+    let height = |labels: &Labels| labels.shown[0].rect[3] - labels.shown[0].rect[1];
+    assert_eq!(height(&one), 20.0);
+    assert_eq!(height(&two), 40.0);
+}
+
+/// The sum of the channels of a pixel.
+fn sum(rgb: [u8; 3]) -> u32 {
+    rgb.iter().map(|&channel| u32::from(channel)).sum()
+}
+
+/// The lightest of the darkest pixels of the stems of `image` among `pixels`. A stem is a run of
+/// adjacent columns whose darkest pixel has a sum of the channels below 600.
+fn faintest_stem(image: &Image, pixels: impl Iterator<Item = (u32, u32)>) -> [u8; 3] {
+    let mut columns: BTreeMap<u32, [u8; 3]> = BTreeMap::new();
+    for (x, y) in pixels {
+        let [r, g, b, _] = image.pixel(x, y);
+        let column = columns.entry(x).or_insert([255; 3]);
+        if sum([r, g, b]) < sum(*column) {
+            *column = [r, g, b];
+        }
+    }
+    let mut stems: Vec<[u8; 3]> = Vec::new();
+    let mut last: Option<u32> = None;
+    for (&x, &rgb) in &columns {
+        if sum(rgb) >= 600 {
+            continue;
+        }
+        match stems.last_mut() {
+            Some(stem) if last == Some(x - 1) => {
+                if sum(rgb) < sum(*stem) {
+                    *stem = rgb;
+                }
+            }
+            _ => stems.push(rgb),
+        }
+        last = Some(x);
+    }
+    assert!(stems.len() >= 6, "{stems:?}");
+    stems.into_iter().max_by_key(|&rgb| sum(rgb)).unwrap()
+}
+
+fn near_text_colour(rgb: [u8; 3]) -> bool {
+    rgb.iter()
+        .zip([0x15_u8, 0x19, 0x1F])
+        .all(|(&channel, text)| channel.abs_diff(text) <= 20)
+}
+
+#[test]
+fn stems_of_a_label_and_of_the_panel_text_reach_within_20_of_the_text_colour() {
+    let Some(renderer) = renderer() else { return };
+    let world = labelled(&[("leaf", "device", Some("||||||"))], true);
+    let camera = front(&world, per_unit(80.0), 0.0);
+    let look = isometric();
+    let labels = labels_of(&renderer, &world, &camera, None, 1.0);
+    let [left, top, right, bottom] = labels.shown[0].rect.map(|value| value as u32);
+    let view = View {
+        world: &world,
+        look: &look,
+        selection: None,
+        camera: &camera,
+        details: &[],
+        scale: 1.0,
+    };
+    let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
+    let label = faintest_stem(
+        &image,
+        (top..bottom).flat_map(|y| (left..right).map(move |x| (x, y))),
+    );
+    let selection = Selection::Node(id("leaf"));
+    let frame = |details: &[(String, String)]| {
+        let view = View {
+            world: &world,
+            look: &look,
+            selection: Some(&selection),
+            camera: &camera,
+            details,
+            scale: 1.0,
+        };
+        renderer.render(&view, WIDTH, HEIGHT).unwrap()
+    };
+    let without = frame(&[]);
+    let panel = |name: &str, value: &str| {
+        let with = frame(&[(name.to_owned(), value.to_owned())]);
+        faintest_stem(
+            &with,
+            (0..HEIGHT)
+                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let [r, g, b, _] = with.pixel(x, y);
+                    with.pixel(x, y) != without.pixel(x, y)
+                        && ![[0x85, 0x8E, 0x9C], [0x2A, 0x52, 0xD6]].contains(&[r, g, b])
+                }),
+        )
+    };
+    let (title, value) = (panel("", "llllll"), panel(" ", "||||||"));
+    assert!(near_text_colour(label), "{label:?}");
+    assert!(near_text_colour(title), "{title:?}");
+    assert!(near_text_colour(value), "{value:?}");
 }

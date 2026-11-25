@@ -1,7 +1,8 @@
 //! Draw code of the galaxy engine: the frame of a world into a window or an image, on `wgpu`.
 
+pub mod label;
 pub mod mesh;
-mod text;
+pub mod text;
 
 use std::cell::{OnceCell, Ref, RefCell};
 use std::collections::BTreeMap;
@@ -10,13 +11,14 @@ use std::io::Write;
 use std::ops::Range;
 use std::sync::OnceLock;
 
+use label::{Candidate, Cause, Grid, Hidden, Labels};
 use mesh::{Fit, MATERIALS, Mesh, Registry, Vertex};
-use text::{Face, Fonts, Run, Text};
+use text::{Atlas, Face, Fonts, Quad, Run, TEXT_SIZE, Text};
 
 use bytemuck::{Pod, Zeroable};
 use galaxy_scene::{
-    Colours, DefinedShape, Library, Light, Lines, Look, ObjectId, OutcomeKind, Placed, Projection,
-    Scheme, Shape, Space, World,
+    Arrangement, Colours, DefinedShape, Library, Light, Lines, Look, ObjectId, OutcomeKind, Placed,
+    Projection, Scheme, Shape, Space, World,
 };
 use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
@@ -144,6 +146,9 @@ const COLUMN_GAP: f32 = 18.0;
 const PADDING: f32 = 14.0;
 /// Distance of the panel of the selection from the edges of the frame, in pixels.
 const PANEL_INSET: f32 = 16.0;
+/// Width in pixels of the halo of the text of the panel in the colour of the panel, at least the
+/// ramp of the edge of a glyph in `text.wgsl`.
+const PANEL_HALO: f32 = 1.0;
 
 /// Colours of a scheme of the theme, as sRGB bytes, and the opacity of the floor
 /// shadow.
@@ -414,8 +419,8 @@ pub enum Selection {
     Flow(ObjectId),
 }
 
-/// A world with its look, its selection, its camera, and the lines of the panel of the
-/// selection: a name and a value for each line.
+/// A world with its look, its selection, its camera, the lines of the panel of the selection (a
+/// name and a value for each line), and the scale factor of the window, 1 for an image.
 #[derive(Clone, Copy, Debug)]
 pub struct View<'a> {
     pub world: &'a World,
@@ -423,6 +428,18 @@ pub struct View<'a> {
     pub selection: Option<&'a Selection>,
     pub camera: &'a Camera,
     pub details: &'a [(String, String)],
+    pub scale: f32,
+}
+
+impl View<'_> {
+    /// The scale factor, 1 for a value that is not finite or not above 0.
+    fn factor(&self) -> f32 {
+        if self.scale.is_finite() && self.scale > 0.0 {
+            self.scale
+        } else {
+            1.0
+        }
+    }
 }
 
 /// An image of 8-bit sRGB pixels with alpha, row by row from the top.
@@ -734,7 +751,7 @@ impl Renderer {
         let shadow = pipeline("shadow_main", blended, SAMPLES);
         let pick = pipeline("pick_main", PICK_FORMAT.into(), 1);
         let meshes = RefCell::new(Meshes::new(&device, &Library::default()));
-        let text = Text::new(&device, format);
+        let text = Text::new(&device, format, SAMPLES, DEPTH_FORMAT);
         Self {
             device,
             queue,
@@ -774,7 +791,7 @@ impl Renderer {
     /// The count of the instances of the floor grid, of the casings, of the meshes and of the
     /// glow of a frame of `width` by `height` pixels.
     pub fn count(&self, view: &View, width: u32, height: u32) -> usize {
-        let boxes = boxes(view, width, height);
+        let boxes = boxes(view, width, height, &states(view, height));
         boxes.floor.len()
             + boxes.plates.len()
             + boxes.shells.len()
@@ -783,12 +800,56 @@ impl Renderer {
             + boxes.glow.len()
     }
 
+    /// The shown and the hidden labels of `view` in a frame of `width` by `height` pixels, as
+    /// `draw` shows them.
+    pub fn labels(&self, view: &View, width: u32, height: u32) -> Labels {
+        self.text_of_frame(view, [width, height], &states(view, height), &[])
+            .0
+    }
+
+    /// The labels of a frame with the quads of the labels and the quads of `runs` of the panel.
+    /// When a glyph finds no room in the atlas, the atlas is cleared 1 time and the frame places
+    /// its glyphs again. After that, a label with a glyph that finds no room is hidden with the
+    /// cause atlas, and a glyph of the panel that finds no room is not drawn.
+    fn text_of_frame(
+        &self,
+        view: &View,
+        size: [u32; 2],
+        states: &States,
+        runs: &[Run],
+    ) -> (Labels, Vec<Quad>, Vec<Quad>) {
+        let fonts = &self.text.fonts;
+        let places = label_places(view, size, states, fonts);
+        let mut atlas = self.text.atlas.borrow_mut();
+        let mut cleared = false;
+        loop {
+            let Some((labels, quads)) = lay_labels(view, size, &places, fonts, &mut atlas, cleared)
+            else {
+                atlas.clear();
+                cleared = true;
+                continue;
+            };
+            let mut panel = Vec::new();
+            let mut full = false;
+            for run in runs {
+                full |= text::run_quads(fonts, &mut atlas, run, &mut panel).is_err();
+            }
+            if full && !cleared {
+                atlas.clear();
+                cleared = true;
+                continue;
+            }
+            return (labels, quads, panel);
+        }
+    }
+
     /// Draws `view` into `target`, a texture of the format of the renderer with `width` by
     /// `height` pixels, with the compass in its bottom left corner.
     pub fn draw(&self, view: &View, target: &wgpu::TextureView, width: u32, height: u32) {
         let meshes = self.meshes(view.world.library());
         let registry = &meshes.registry;
-        let boxes = boxes(view, width, height);
+        let states = states(view, height);
+        let boxes = boxes(view, width, height, &states);
         let compass = compass(view);
         let mut targets = self.targets.borrow_mut();
         let fresh = !matches!(&*targets, Some(kept) if kept.size == [width, height]);
@@ -830,16 +891,14 @@ impl Renderer {
             },
         ];
         let panel = panel(view, width, height, &self.text.fonts);
+        let (_, label_quads, panel_quads) =
+            self.text_of_frame(view, [width, height], &states, &panel.2);
         let table = materials(&colours, view.world.library(), view.look.scheme);
         let full = Some(([0.0, 0.0, width as f32, height as f32], DEPTH_RANGE));
-        let side = COMPASS.min(width).min(height);
+        let [inset, side] = compass_box(view.factor());
+        let side = side.min(width as f32).min(height as f32);
         let compass_viewport = (
-            [
-                COMPASS_INSET as f32,
-                height.saturating_sub(COMPASS_INSET + side) as f32,
-                side as f32,
-                side as f32,
-            ],
+            [inset, (height as f32 - inset - side).max(0.0), side, side],
             [0.0, 0.05],
         );
         let layer = |pipeline, instances, corners| Layer {
@@ -867,6 +926,9 @@ impl Renderer {
             layer(&self.shell, &boxes.shells, registry.range(Mesh::CubeEdges)),
             layer(&self.shadow, &boxes.shadows, cube.clone()),
             layer(&self.glow, &boxes.glow, cube.clone()),
+        ]);
+        let labels_at = layers.len();
+        layers.extend([
             Layer {
                 pipeline: &self.solid,
                 view_projection: compass.0,
@@ -888,23 +950,27 @@ impl Renderer {
                 viewport: Some(([0.0, 0.0, width as f32, height as f32], [0.0, 0.05])),
             },
         ]);
+        self.text.upload(&self.queue);
+        let (labels, panel_text) = self.text.prepare(
+            &self.device,
+            &self.queue,
+            [width, height],
+            &label_quads,
+            &panel_quads,
+        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.pass(
             &mut encoder,
             (&layers, &meshes.corners),
-            &kept.samples,
-            Some(target),
-            &kept.depth,
+            (&kept.samples, Some(target), &kept.depth),
             ground,
+            labels
+                .as_ref()
+                .map(|labels| (labels_at, labels, [width, height])),
         );
-        self.text.draw(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            target,
-            [width, height],
-            &panel.2,
-        );
+        if let Some(panel_text) = &panel_text {
+            self.text.draw_panel(&mut encoder, target, panel_text);
+        }
         self.queue.submit([encoder.finish()]);
     }
 
@@ -960,7 +1026,7 @@ impl Renderer {
             return Ok(None);
         }
         let meshes = self.meshes(view.world.library());
-        let boxes = boxes(view, width, height);
+        let boxes = boxes(view, width, height, &states(view, height));
         let target = self.texture(PICK_FORMAT, 1, width, height);
         let depth = self.texture(DEPTH_FORMAT, 1, width, height);
         let view_projection = view
@@ -987,10 +1053,13 @@ impl Renderer {
         self.pass(
             &mut encoder,
             (&layers, &meshes.corners),
-            &target.create_view(&Default::default()),
-            None,
-            &depth.create_view(&Default::default()),
+            (
+                &target.create_view(&Default::default()),
+                None,
+                &depth.create_view(&Default::default()),
+            ),
             wgpu::Color::TRANSPARENT,
+            None,
         );
         self.queue.submit([encoder.finish()]);
         let bytes = self.read(&target, [x, y], [1, 1])?;
@@ -1032,10 +1101,13 @@ impl Renderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         (layers, corners): (&[Layer], &wgpu::Buffer),
-        view: &wgpu::TextureView,
-        resolve: Option<&wgpu::TextureView>,
-        depth: &wgpu::TextureView,
+        (view, resolve, depth): (
+            &wgpu::TextureView,
+            Option<&wgpu::TextureView>,
+            &wgpu::TextureView,
+        ),
         clear: wgpu::Color,
+        labels: Option<(usize, &text::Prepared, [u32; 2])>,
     ) {
         let prepared: Vec<Option<(wgpu::BindGroup, wgpu::Buffer)>> = layers
             .iter()
@@ -1101,11 +1173,18 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_vertex_buffer(0, corners.slice(..));
-        for (layer, prepared) in layers.iter().zip(&prepared) {
+        for (at, (layer, prepared)) in layers.iter().zip(&prepared).enumerate() {
+            if let Some((labels_at, labels, size)) = labels
+                && labels_at == at
+            {
+                let [width, height] = size.map(|side| side as f32);
+                pass.set_viewport(0.0, 0.0, width, height, 0.0, 1.0);
+                Text::record(&mut pass, &self.text.labels, labels);
+            }
             let Some((bind_group, instances)) = prepared else {
                 continue;
             };
+            pass.set_vertex_buffer(0, corners.slice(..));
             if let Some(([x, y, width, height], [near, far])) = layer.viewport {
                 pass.set_viewport(x, y, width, height, near, far);
             }
@@ -1175,6 +1254,229 @@ impl Renderer {
         buffer.unmap();
         Ok(bytes)
     }
+}
+
+/// A label of a frame before its placement: its node, its size on the screen, its text, the left
+/// end of its pen and its baseline in whole pixels, and its rectangle with its halo.
+struct LabelPlace<'a> {
+    index: usize,
+    size: f32,
+    text: &'a str,
+    pen: [f32; 2],
+    rect: [f32; 4],
+}
+
+/// The labels of the nodes of `view` in a frame of `size` pixels by their detail states, each
+/// with its rectangle wholly inside the frame.
+///
+/// A node with no child and a closed node have a label from `label::SHOW` pixels on the screen,
+/// and an open node has its label. A child of a stack has its anchor in the middle of the right
+/// edge of its front face, and its label centred on y, `label::OFFSET` pixels right of the
+/// anchor. Each other node with no child and each other closed node has its anchor in the middle
+/// of the bottom edge of its front face, and its label centred on x, `label::OFFSET` pixels below
+/// the anchor. An open node has its anchor at the front left corner of the top of its floor
+/// plate, or of its bottom with no floor plate, and its label starts at the anchor on x,
+/// `label::OFFSET` pixels below it. Each size in pixels is multiplied by the scale factor of the
+/// view.
+fn label_places<'a>(
+    view: &View<'a>,
+    [width, height]: [u32; 2],
+    states: &States,
+    fonts: &Fonts,
+) -> Vec<LabelPlace<'a>> {
+    let world = view.world;
+    let factor = view.factor();
+    let em = label::EM * factor;
+    let line = label::LINE * factor;
+    let halo = label::HALO * factor;
+    let offset = label::OFFSET * factor;
+    let show = label::SHOW * factor;
+    let [ascent, descent] = fonts.extent(Face::Label, em);
+    let rise = ((line - ascent - descent) / 2.0 + ascent).round();
+    let matrix = view
+        .camera
+        .view_projection(view.look, width as f32 / height as f32);
+    let project = |point: [f64; 3]| {
+        let clip = matrix * Vec4::new(point[0] as f32, point[1] as f32, point[2] as f32, 1.0);
+        (clip.w > 0.0).then(|| {
+            [
+                (clip.x / clip.w + 1.0) / 2.0 * width as f32,
+                (1.0 - clip.y / clip.w) / 2.0 * height as f32,
+            ]
+        })
+    };
+    let frame = [width as f32, height as f32];
+    let mut out = Vec::new();
+    for (index, state) in states.shown.iter().enumerate() {
+        let size = states.sizes[index];
+        let labelled = match state {
+            Shown::Hidden => false,
+            Shown::Leaf | Shown::Closed => size >= show,
+            Shown::Open => true,
+        };
+        if !labelled {
+            continue;
+        }
+        let Some(text) = world.label(index) else {
+            continue;
+        };
+        let (_, placed, _) = world.node(index);
+        let low = [0, 1, 2].map(|axis| placed.centre[axis] - placed.size[axis] / 2.0);
+        let high = [0, 1, 2].map(|axis| placed.centre[axis] + placed.size[axis] / 2.0);
+        let stacked = world
+            .parent(index)
+            .is_some_and(|parent| world.rule(parent).arrangement == Arrangement::Stack);
+        let advance = fonts.width(Face::Label, text, em);
+        let pen = if *state == Shown::Open {
+            let plate = if view.look.space == Space::Ground && world.shape(index) != Shape::Cloud {
+                PLATE.min(placed.size[1])
+            } else {
+                0.0
+            };
+            project([low[0], low[1] + plate, high[2]])
+                .map(|[x, y]| [x.round(), (y + offset).round()])
+        } else if stacked {
+            project([high[0], placed.centre[1], high[2]])
+                .map(|[x, y]| [(x + offset).round(), (y - line / 2.0).round()])
+        } else {
+            project([placed.centre[0], low[1], high[2]])
+                .map(|[x, y]| [(x - advance / 2.0).round(), (y + offset).round()])
+        };
+        let Some([left, top]) = pen else {
+            continue;
+        };
+        let rect = [
+            left - halo,
+            top - halo,
+            left + advance + halo,
+            top + line + halo,
+        ];
+        let inside = rect.iter().all(|value| value.is_finite())
+            && rect[0] >= 0.0
+            && rect[1] >= 0.0
+            && rect[2] <= frame[0]
+            && rect[3] <= frame[1];
+        if !inside {
+            continue;
+        }
+        out.push(LabelPlace {
+            index,
+            size,
+            text,
+            pen: [left, top + rise],
+            rect,
+        });
+    }
+    out
+}
+
+/// The shown and the hidden labels of `places` and the quads of the shown labels. The labels go
+/// in priority order: the first `label::CANDIDATES` by the overlap grid, the atlas and the limit
+/// of `label::GLYPHS` glyphs, and the others hidden with the cause limit. `None` when a glyph
+/// finds no room in the atlas and `final_pass` is false.
+fn lay_labels(
+    view: &View,
+    [width, height]: [u32; 2],
+    places: &[LabelPlace],
+    fonts: &Fonts,
+    atlas: &mut Atlas,
+    final_pass: bool,
+) -> Option<(Labels, Vec<Quad>)> {
+    let world = view.world;
+    let factor = view.factor();
+    let colours = palette(view.look.scheme);
+    let id = |place: &LabelPlace| world.node(place.index).0.id.clone();
+    let candidates: Vec<Candidate> = places
+        .iter()
+        .map(|place| Candidate {
+            node: id(place),
+            size: place.size,
+        })
+        .collect();
+    let (selected, path) = match view.selection {
+        Some(Selection::Node(node)) => (Some(node), Vec::new()),
+        Some(Selection::Flow(flow)) => (
+            None,
+            world
+                .flows()
+                .iter()
+                .find(|line| &line.id == flow)
+                .map(|line| line.path.clone())
+                .unwrap_or_default(),
+        ),
+        None => (None, Vec::new()),
+    };
+    let order = label::order(&candidates, selected, &path);
+    let mut grid = Grid::new(width as f32, height as f32, label::CELL * factor);
+    let mut labels = Labels::default();
+    let mut quads = Vec::new();
+    let mut glyphs = 0;
+    for (rank, &number) in order.iter().enumerate() {
+        let place = &places[number];
+        let node = candidates[number].node.clone();
+        if rank >= label::CANDIDATES {
+            labels.hidden.push(Hidden {
+                node,
+                cause: Cause::Limit,
+            });
+            continue;
+        }
+        if let Some(first) = grid.hit(&place.rect) {
+            let cause = Cause::Overlap(labels.shown[first].node.clone());
+            labels.hidden.push(Hidden { node, cause });
+            continue;
+        }
+        let count = place.text.chars().count();
+        if glyphs + count > label::GLYPHS {
+            labels.hidden.push(Hidden {
+                node,
+                cause: Cause::Limit,
+            });
+            continue;
+        }
+        let colour = if selected == Some(&node) {
+            colours.selection
+        } else {
+            colours.text
+        };
+        let run = Run {
+            face: Face::Label,
+            text: place.text.to_owned(),
+            left: place.pen[0],
+            baseline: place.pen[1],
+            em: label::EM * factor,
+            colour,
+            halo: Some((colours.ground, label::HALO * factor)),
+        };
+        let start = quads.len();
+        if text::run_quads(fonts, atlas, &run, &mut quads).is_err() {
+            if !final_pass {
+                return None;
+            }
+            quads.truncate(start);
+            labels.hidden.push(Hidden {
+                node,
+                cause: Cause::Atlas,
+            });
+            continue;
+        }
+        glyphs += count;
+        grid.insert(place.rect);
+        labels.shown.push(label::Shown {
+            node,
+            rect: place.rect,
+        });
+    }
+    Some((labels, quads))
+}
+
+/// The distance of the compass from the bottom left corner and its size, in pixels at the scale
+/// factor `factor`.
+fn compass_box(factor: f32) -> [f32; 2] {
+    [
+        (COMPASS_INSET as f32 * factor).round(),
+        (COMPASS as f32 * factor).round(),
+    ]
 }
 
 /// The material table of `colours` and of the materials of `library` in `scheme`: the linear
@@ -1282,6 +1584,52 @@ fn in_view(planes: &[Vec4; 6], placed: &Placed) -> bool {
     })
 }
 
+/// The detail state of each node of a frame, its size on the screen in pixels, and `true` for a
+/// node with a part of its top covered by the next child of its parent.
+struct States {
+    shown: Vec<Shown>,
+    sizes: Vec<f32>,
+    covered: Vec<bool>,
+}
+
+/// The detail states of the nodes of `view` in a frame `height` pixels high, from a walk that
+/// visits the nodes with no parent and the children of each open node.
+fn states(view: &View, height: u32) -> States {
+    let world = view.world;
+    let scale = view.camera.scale(view.look, height);
+    let mut shown = vec![Shown::Hidden; world.len()];
+    let mut sizes = vec![0.0_f32; world.len()];
+    let mut covered = vec![false; world.len()];
+    let mut stack: Vec<usize> = world.top().iter().rev().copied().collect();
+    while let Some(index) = stack.pop() {
+        let (_, placed, has_children) = world.node(index);
+        let size = scale.pixels(placed);
+        sizes[index] = size;
+        if size < MERGED {
+            continue;
+        }
+        shown[index] = if !has_children {
+            Shown::Leaf
+        } else if size < OPEN {
+            Shown::Closed
+        } else {
+            let children = world.children(index);
+            for pair in children.windows(2) {
+                let [below, above] = [pair[0], pair[1]].map(|child| world.node(child).1);
+                covered[pair[0]] |= covers(above, below);
+                covered[pair[1]] |= covers(below, above);
+            }
+            stack.extend(children.iter().rev());
+            Shown::Open
+        };
+    }
+    States {
+        shown,
+        sizes,
+        covered,
+    }
+}
+
 /// The instances of a frame of `width` by `height` pixels.
 ///
 /// Each node gets a detail state from its size on the screen. A node with no child and a closed
@@ -1316,7 +1664,12 @@ fn in_view(planes: &[Vec4; 6], placed: &Placed) -> bool {
 /// but a lane change shorter than `JOG`. Each segment of a selected flow has a casing in the
 /// selection colour, and its other marks have none. The look with ground has a floor grid under the
 /// nodes with no parent.
-fn boxes(view: &View, width: u32, height: u32) -> Boxes {
+fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
+    let States {
+        shown,
+        sizes,
+        covered,
+    } = states;
     let world = view.world;
     let look = view.look;
     let camera = view.camera;
@@ -1332,33 +1685,6 @@ fn boxes(view: &View, width: u32, height: u32) -> Boxes {
     let pixel = |point: [f64; 3]| {
         f64::from(scale.units_per_pixel(Vec3::from_array(point.map(|value| value as f32))))
     };
-
-    let mut shown = vec![Shown::Hidden; world.len()];
-    let mut sizes = vec![0.0_f32; world.len()];
-    let mut covered = vec![false; world.len()];
-    let mut stack: Vec<usize> = world.top().iter().rev().copied().collect();
-    while let Some(index) = stack.pop() {
-        let (_, placed, has_children) = world.node(index);
-        let size = scale.pixels(placed);
-        sizes[index] = size;
-        if size < MERGED {
-            continue;
-        }
-        shown[index] = if !has_children {
-            Shown::Leaf
-        } else if size < OPEN {
-            Shown::Closed
-        } else {
-            let children = world.children(index);
-            for pair in children.windows(2) {
-                let [below, above] = [pair[0], pair[1]].map(|child| world.node(child).1);
-                covered[pair[0]] |= covers(above, below);
-                covered[pair[1]] |= covers(below, above);
-            }
-            stack.extend(children.iter().rev());
-            Shown::Open
-        };
-    }
 
     let count = mesh::count(library);
     let mut boxes = Boxes {
@@ -2556,35 +2882,35 @@ fn panel(view: &View, width: u32, height: u32, fonts: &Fonts) -> (Mat4, Vec<Inst
         return (projection, out, runs);
     }
     let colours = palette(view.look.scheme);
+    let factor = view.factor();
+    let em = TEXT_SIZE * factor;
+    let [line_height, column_gap, padding, panel_inset] =
+        [LINE_HEIGHT, COLUMN_GAP, PADDING, PANEL_INSET].map(|value| (value * factor).round());
     let names = view
         .details
         .iter()
-        .map(|(name, _)| fonts.width(Face::Name, name))
+        .map(|(name, _)| fonts.width(Face::Name, name, em))
         .fold(0.0, f32::max);
-    let column = if names > 0.0 { names + COLUMN_GAP } else { 0.0 };
+    let column = if names > 0.0 { names + column_gap } else { 0.0 };
     let content = view
         .details
         .iter()
         .map(|(name, value)| {
             if name.is_empty() {
-                fonts.width(Face::Title, value)
+                fonts.width(Face::Title, value, em)
             } else {
-                column + fonts.width(Face::Value, value)
+                column + fonts.width(Face::Value, value, em)
             }
         })
         .fold(0.0, f32::max);
-    let [ascent, descent] = fonts.extent(Face::Value);
-    let panel_width = content.ceil() + 2.0 * PADDING;
+    let [ascent, descent] = fonts.extent(Face::Value, em);
+    let panel_width = content.ceil() + 2.0 * padding;
     let panel_height =
-        (view.details.len() - 1) as f32 * LINE_HEIGHT + (ascent + descent).ceil() + 2.0 * PADDING;
-    let right = (w - panel_width - PANEL_INSET).max(PANEL_INSET);
-    let low = (h - panel_height - PANEL_INSET).max(PANEL_INSET);
-    let compass = [
-        COMPASS_INSET as f32,
-        h - (COMPASS_INSET + COMPASS) as f32,
-        (COMPASS_INSET + COMPASS) as f32,
-        h - COMPASS_INSET as f32,
-    ];
+        (view.details.len() - 1) as f32 * line_height + (ascent + descent).ceil() + 2.0 * padding;
+    let right = (w - panel_width - panel_inset).max(panel_inset);
+    let low = (h - panel_height - panel_inset).max(panel_inset);
+    let [inset, side] = compass_box(factor);
+    let compass = [inset, h - inset - side, inset + side, h - inset];
     let mut obstacles = obstacles(view, width, height);
     obstacles.push(compass);
     let covered = |[left, top]: [f32; 2]| -> f32 {
@@ -2598,10 +2924,10 @@ fn panel(view: &View, width: u32, height: u32, fonts: &Fonts) -> (Mat4, Vec<Inst
             .sum()
     };
     let [x, y] = [
-        [right, PANEL_INSET],
+        [right, panel_inset],
         [right, low],
-        [PANEL_INSET, PANEL_INSET],
-        [PANEL_INSET, low],
+        [panel_inset, panel_inset],
+        [panel_inset, low],
     ]
     .into_iter()
     .map(|corner| (corner, covered(corner)))
@@ -2612,7 +2938,7 @@ fn panel(view: &View, width: u32, height: u32, fonts: &Fonts) -> (Mat4, Vec<Inst
             _ => Some((corner, area)),
         },
     )
-    .map_or([right, PANEL_INSET], |(corner, _)| corner);
+    .map_or([right, panel_inset], |(corner, _)| corner);
     let mut rect = |left: f32, top: f32, across: f32, down: f32, layer: f32, rgb: [u8; 3]| {
         push(
             &mut out,
@@ -2636,27 +2962,32 @@ fn panel(view: &View, width: u32, height: u32, fonts: &Fonts) -> (Mat4, Vec<Inst
         colours.edge,
     );
     rect(x, y, panel_width, panel_height, 2.0, colours.surface);
-    rect(x, y, 3.0, panel_height, 3.0, colours.selection);
-    let colour = |rgb: [u8; 3]| {
-        let [r, g, b] = linear(rgb);
-        [r, g, b, 1.0]
-    };
+    rect(
+        x,
+        y,
+        (3.0 * factor).round(),
+        panel_height,
+        3.0,
+        colours.selection,
+    );
     for (line, (name, value)) in view.details.iter().enumerate() {
-        let baseline = y + PADDING + ascent + line as f32 * LINE_HEIGHT;
+        let baseline = y + padding + ascent + line as f32 * line_height;
         let mut write = |face: Face, text: &str, left: f32, rgb: [u8; 3]| {
             runs.push(Run {
                 face,
                 text: text.to_owned(),
                 left,
                 baseline,
-                colour: colour(rgb),
+                em,
+                colour: rgb,
+                halo: Some((colours.surface, PANEL_HALO)),
             });
         };
         if name.is_empty() {
-            write(Face::Title, value, x + PADDING, colours.text);
+            write(Face::Title, value, x + padding, colours.text);
         } else {
-            write(Face::Name, name, x + PADDING, colours.edge);
-            write(Face::Value, value, x + PADDING + column, colours.text);
+            write(Face::Name, name, x + padding, colours.edge);
+            write(Face::Value, value, x + padding + column, colours.text);
         }
     }
     (projection, out, runs)

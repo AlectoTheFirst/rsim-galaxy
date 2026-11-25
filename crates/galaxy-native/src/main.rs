@@ -5,10 +5,11 @@
 //! `galaxy-documents` next to it. `--ops <file>` applies the operations of a file of JSON lines,
 //! each `{"name":...,"arguments":...}`. A `load_view` with `sha256` reads the kept document of
 //! that hash and sends no request. `--png <file>` writes the frame of the home view to a PNG file
-//! and opens no window. `--width` and `--height` give its size, and `--select <name>` selects a
-//! node or a flow. `--log <file>` writes the operation log as JSON lines after each change, an
-//! operation file of the same form with the `sha256` of each load. `--mcp` serves the tools on
-//! MCP over standard input and output.
+//! and the label lines of the frame to the standard error, and opens no window. `--width` and
+//! `--height` give its size, and `--select <name>` selects a node or a flow. `--log <file>`
+//! writes the operation log as JSON lines after each change, an operation file of the same form
+//! with the `sha256` of each load. `--mcp` serves the tools on MCP over standard input and
+//! output. The window draws at its scale factor.
 //!
 //! In the window, a drag turns the camera around its target, the wheel moves it nearer or
 //! farther, a click selects the object below the pointer and shows its panel, and Home gives the
@@ -230,6 +231,7 @@ impl App {
             selection: self.viewer.selection.as_ref(),
             camera: &camera,
             details: &details,
+            scale: display.window.scale_factor() as f32,
         };
         display
             .renderer
@@ -250,6 +252,7 @@ impl App {
             selection: None,
             camera: &camera,
             details: &[],
+            scale: display.window.scale_factor() as f32,
         };
         let picked = display.renderer.pick(
             &view,
@@ -332,6 +335,7 @@ impl ApplicationHandler<Request> for App {
                     display.window.request_redraw();
                 }
             }
+            WindowEvent::ScaleFactorChanged { .. } => self.redraw_later(),
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(press) = self.press {
@@ -512,9 +516,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             selection: viewer.selection.as_ref(),
             camera: &camera,
             details: &details,
+            scale: 1.0,
         };
         let image = renderer.render(&view, arguments.width, arguments.height)?;
         image.write_png(std::io::BufWriter::new(std::fs::File::create(path)?))?;
+        for line in renderer
+            .labels(&view, arguments.width, arguments.height)
+            .lines()
+        {
+            eprintln!("{line}");
+        }
         print!("{}", viewer.describe());
         return Ok(());
     }

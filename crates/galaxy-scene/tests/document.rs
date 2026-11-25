@@ -167,7 +167,6 @@ fn answer_names_the_ignored_members_and_lines_and_the_members_not_shown() {
         answer.not_shown,
         [
             "node.fields.missing",
-            "node.label",
             "node.handle",
             "link",
             "flow.fields.missing",
@@ -206,6 +205,29 @@ fn answer_names_the_ignored_members_and_lines_and_the_members_not_shown() {
         world.shape(index).name().unwrap()
     };
     assert_eq!((shape("a"), shape("b")), ("laptop", "layer3-switch"));
+}
+
+#[test]
+fn a_node_label_of_a_document_is_the_label_of_the_node_and_not_in_not_shown() {
+    let text = document(
+        r#"{"id":"site-a","kind":"site","label":"Site A"},{"id":"r1","kind":"router","in":"site-a"}"#,
+        "",
+        "",
+    );
+    let loaded = load(&text);
+    let labels: Vec<(&str, Option<&str>)> = loaded
+        .relations()
+        .nodes()
+        .iter()
+        .map(|node| (node.id.as_str(), node.label.as_deref()))
+        .collect();
+    assert_eq!(labels, [("site-a", Some("Site A")), ("r1", None)]);
+    assert!(loaded.answer().not_shown.is_empty());
+    let mut model = Model::new(Style::default());
+    model.apply(Change::Load(loaded)).unwrap();
+    let world = model.world();
+    assert_eq!(world.label(0), Some("Site A"));
+    assert_eq!(world.label(1), Some("r1"));
 }
 
 #[test]

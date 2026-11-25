@@ -8,14 +8,27 @@ use crate::library::Library;
 /// A length for each of the axes x, y and z. The y axis points up.
 pub type Vec3 = [f64; 3];
 
-/// A node of the relations: its name, its kind, the node that contains it and the data of the
-/// source by field name.
+/// A node of the relations: its name, its kind, the node that contains it, its label and the
+/// data of the source by field name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub id: ObjectId,
     pub kind: String,
     pub parent: Option<ObjectId>,
+    /// The label text, 1 to `Node::LABEL` characters.
+    pub label: Option<String>,
     pub fields: Vec<(String, String)>,
+}
+
+impl Node {
+    /// The smallest and the largest number of characters of a label, counted as Unicode scalar
+    /// values.
+    pub const LABEL: [usize; 2] = [1, 256];
+
+    /// `true` for a label text of 1 to 256 characters.
+    pub fn valid_label(label: &str) -> bool {
+        (Self::LABEL[0]..=Self::LABEL[1]).contains(&label.chars().count())
+    }
 }
 
 /// The end of a flow at the last node of its path.
@@ -131,7 +144,7 @@ impl Relations {
         self.add_with_fields(id, kind, parent, Vec::new())
     }
 
-    /// Adds a node with the data of the source. A refused node changes nothing.
+    /// Adds a node with the data of the source and no label. A refused node changes nothing.
     pub fn add_with_fields(
         &mut self,
         id: ObjectId,
@@ -139,23 +152,29 @@ impl Relations {
         parent: Option<ObjectId>,
         fields: Vec<(String, String)>,
     ) -> Result<(), RelationRefusal> {
-        if let Some(refusal) = self.in_use(&id) {
+        self.add_node(Node {
+            id,
+            kind: kind.to_owned(),
+            parent,
+            label: None,
+            fields,
+        })
+    }
+
+    /// Adds `node`. The caller checks the label. A refused node changes nothing.
+    pub fn add_node(&mut self, node: Node) -> Result<(), RelationRefusal> {
+        if let Some(refusal) = self.in_use(&node.id) {
             return Err(refusal);
         }
-        if let Some(parent) = &parent
+        if let Some(parent) = &node.parent
             && !self.index.contains_key(parent)
         {
             return Err(RelationRefusal::NoParent {
                 parent: parent.clone(),
             });
         }
-        self.index.insert(id.clone(), self.nodes.len());
-        self.nodes.push(Node {
-            id,
-            kind: kind.to_owned(),
-            parent,
-            fields,
-        });
+        self.index.insert(node.id.clone(), self.nodes.len());
+        self.nodes.push(node);
         Ok(())
     }
 
@@ -364,6 +383,8 @@ pub struct Rule {
     pub gap: f64,
     /// Distance between the children and the surface of the node.
     pub margin: f64,
+    /// `true` for a label on each node of the kind.
+    pub label: bool,
 }
 
 /// The rule of each kind, the rule of a kind with no rule, and the rule that places the nodes
@@ -713,6 +734,16 @@ impl World {
     /// The rule of the kind of the node `index` in the rule set of the world.
     pub fn rule(&self, index: usize) -> &Rule {
         &self.rules[index]
+    }
+
+    /// The label text of the node at `index`: its own label, else its id. `None` when the rule
+    /// of its kind has `label` false.
+    pub fn label(&self, index: usize) -> Option<&str> {
+        if !self.rules[index].label {
+            return None;
+        }
+        let node = &self.nodes[index];
+        Some(node.label.as_deref().unwrap_or(node.id.as_str()))
     }
 
     /// The defined shapes and the materials of the style of the world.
@@ -1767,9 +1798,10 @@ impl World {
         bounds
     }
 
-    /// One line for each node in name order: the name, the kind, the parent, the centre and the
-    /// size. Then one line for each flow in name order: the name, the path, the outcome with its
-    /// reason, the data of the source and the points. Then the lines of `Library::describe`.
+    /// One line for each node in name order: the name, the kind, the parent, the own label, the
+    /// centre and the size. Then one line for each flow in name order: the name, the path, the
+    /// outcome with its reason, the data of the source and the points. Then the lines of
+    /// `Library::describe`.
     pub fn describe(&self) -> String {
         let mut text = String::new();
         for (id, &index) in &self.index {
@@ -1778,6 +1810,9 @@ impl World {
             text.push_str(&format!("{id} {}", node.kind));
             if let Some(parent) = &node.parent {
                 text.push_str(&format!(" in={parent}"));
+            }
+            if let Some(label) = &node.label {
+                text.push_str(&format!(" label={label:?}"));
             }
             let [x, y, z] = placed.centre;
             let [width, height, depth] = placed.size;

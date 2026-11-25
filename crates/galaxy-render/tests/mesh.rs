@@ -1,7 +1,9 @@
+use galaxy_render::label::{Candidate, Cause, Grid, Hidden, Labels, Shown, order, place};
 use galaxy_render::mesh::{
     Fit, Material, Mesh, Regions, Registry, Vertex, build, count, fitted, forms, reference, region,
 };
-use galaxy_scene::{Axis, Colours, DefinedShape, Library, Part, Shape, Solid, Style};
+use galaxy_render::text::{Atlas, Face, Fonts, SPREAD, raster};
+use galaxy_scene::{Axis, Colours, DefinedShape, Library, ObjectId, Part, Shape, Solid, Style};
 
 /// Edge thickness of the test positions of the bars.
 const THICKNESS: f32 = 0.02;
@@ -773,4 +775,176 @@ fn brick_block_fills_the_unit_box_with_bricks_on_mortar() {
     );
     let [low, high] = bounds(Mesh::BrickBlock, Fit::None);
     assert_eq!((low, high), ([-0.5; 3], [0.5; 3]));
+}
+
+#[test]
+fn distance_of_a_pixel_on_the_outline_of_the_master_raster_is_one_half_within_one_sixteenth() {
+    let fonts = Fonts::new();
+    for face in [Face::Label, Face::Title] {
+        for character in ['a', 'g', 'W', '0', '@'] {
+            let raster = raster(&fonts, face, character).unwrap();
+            assert_eq!(raster.coverage.len(), raster.width * raster.height);
+            let mut outline = 0;
+            for (coverage, field) in raster.coverage.iter().zip(&raster.field) {
+                if *coverage > 0.0 && *coverage < 1.0 {
+                    outline += 1;
+                    assert!((field - 0.5).abs() <= 1.0 / 16.0, "{character} {field}");
+                } else if *coverage >= 1.0 {
+                    assert!(*field > 0.5, "{character} {field}");
+                } else {
+                    assert!(*field < 0.5, "{character} {field}");
+                }
+            }
+            assert!(outline > 0, "{character}");
+            let border = SPREAD * 4;
+            for column in [0, raster.width - 1] {
+                for row in 0..raster.height {
+                    assert_eq!(raster.coverage[row * raster.width + column], 0.0);
+                }
+            }
+            assert!(raster.width > 2 * border && raster.height > 2 * border);
+        }
+    }
+}
+
+#[test]
+fn full_atlas_clears_and_places_a_glyph_as_an_empty_atlas() {
+    let fonts = Fonts::new();
+    let mut fresh = Atlas::with_size(256);
+    let cell = fresh.glyph(&fonts, Face::Label, 'g').unwrap().unwrap();
+    let texels = fresh.cell_texels(&cell);
+    assert!(texels.iter().any(|&texel| texel > 128));
+
+    let mut atlas = Atlas::with_size(256);
+    let mut full = false;
+    'fill: for face in [Face::Title, Face::Name, Face::Value, Face::Label] {
+        for character in ('A'..='Z').chain('a'..='z').chain('0'..='9') {
+            if atlas.glyph(&fonts, face, character).is_err() {
+                full = true;
+                break 'fill;
+            }
+        }
+    }
+    assert!(full);
+    assert!(atlas.glyph(&fonts, Face::Label, '#').is_err());
+    atlas.clear();
+    let again = atlas.glyph(&fonts, Face::Label, 'g').unwrap().unwrap();
+    assert_eq!(again, cell);
+    assert_eq!(atlas.cell_texels(&again), texels);
+    assert_eq!(atlas.texels, fresh.texels);
+
+    let mut large = Atlas::new();
+    large.glyph(&fonts, Face::Name, 'Q').unwrap();
+    let moved = large.glyph(&fonts, Face::Label, 'g').unwrap().unwrap();
+    assert_ne!(moved.corner, cell.corner);
+    assert_eq!(large.cell_texels(&moved), texels);
+}
+
+#[test]
+fn glyph_with_no_outline_has_no_cell() {
+    let fonts = Fonts::new();
+    let mut atlas = Atlas::with_size(256);
+    assert_eq!(atlas.glyph(&fonts, Face::Label, ' '), Ok(None));
+}
+
+#[test]
+fn width_of_a_label_is_the_sum_of_the_advances_of_its_characters() {
+    let fonts = Fonts::new();
+    let one = fonts.width(Face::Label, "a", 11.0);
+    assert!(one > 5.0 && one < 8.0, "{one}");
+    assert!((fonts.width(Face::Label, "abcd", 11.0) - 4.0 * one).abs() < 1e-4);
+    assert!((fonts.width(Face::Label, "abcd", 22.0) - 8.0 * one).abs() < 1e-4);
+    let accent = fonts.width(Face::Label, "\u{e9}", 11.0);
+    assert!((fonts.width(Face::Label, "ab\u{e9}", 11.0) - (2.0 * one + accent)).abs() < 1e-4);
+}
+
+fn id(name: &str) -> ObjectId {
+    ObjectId::new(name).unwrap()
+}
+
+#[test]
+fn labels_take_their_places_in_priority_order_with_the_first_overlapped_label_as_the_cause() {
+    let rects = [
+        [0.0, 0.0, 100.0, 20.0],
+        [50.0, 10.0, 150.0, 30.0],
+        [100.0, 0.0, 200.0, 20.0],
+        [10.0, 5.0, 20.0, 15.0],
+        [60.0, 100.0, 300.0, 200.0],
+        [290.0, 190.0, 310.0, 210.0],
+        [0.0, 0.0, 400.0, 300.0],
+    ];
+    assert_eq!(
+        place(&rects, 400.0, 300.0, 64.0),
+        vec![None, Some(0), None, Some(0), None, Some(4), Some(0)]
+    );
+    assert_eq!(
+        place(&rects, 400.0, 300.0, 1000.0),
+        place(&rects, 400.0, 300.0, 64.0)
+    );
+    assert_eq!(Grid::new(2560.0, 1440.0, 64.0).dimensions(), [40, 23]);
+    assert_eq!(Grid::new(2560.0, 1440.0, 128.0).dimensions(), [20, 12]);
+}
+
+#[test]
+fn order_puts_the_selected_node_then_the_path_then_the_larger_then_the_id() {
+    let candidates: Vec<Candidate> = [
+        ("b", 50.0),
+        ("a", 50.0),
+        ("big", 200.0),
+        ("hop-2", 10.0),
+        ("hop-1", 60.0),
+        ("chosen", 5.0),
+    ]
+    .into_iter()
+    .map(|(name, size)| Candidate {
+        node: id(name),
+        size,
+    })
+    .collect();
+    let path = [id("hop-1"), id("hop-2"), id("hop-1")];
+    assert_eq!(
+        order(&candidates, Some(&id("chosen")), &path),
+        vec![5, 4, 3, 2, 1, 0]
+    );
+    assert_eq!(order(&candidates, None, &[]), vec![2, 4, 1, 0, 3, 5]);
+}
+
+#[test]
+fn scene_text_has_the_count_line_and_256_hidden_lines_at_most() {
+    let hidden = |count: usize| -> Vec<Hidden> {
+        (0..count)
+            .map(|number| Hidden {
+                node: id(&format!("n{number}")),
+                cause: match number % 3 {
+                    0 => Cause::Overlap(id("top")),
+                    1 => Cause::Atlas,
+                    _ => Cause::Limit,
+                },
+            })
+            .collect()
+    };
+    let labels = Labels {
+        shown: vec![Shown {
+            node: id("top"),
+            rect: [0.0, 0.0, 10.0, 10.0],
+        }],
+        hidden: hidden(300),
+    };
+    let lines = labels.lines();
+    assert_eq!(lines.len(), 1 + 256 + 1);
+    assert_eq!(lines[0], "labels shown=1 hidden=300");
+    assert_eq!(lines[1], "label n0 hidden overlap=top");
+    assert_eq!(lines[2], "label n1 hidden atlas");
+    assert_eq!(lines[3], "label n2 hidden limit");
+    assert_eq!(lines[256], "label n255 hidden overlap=top");
+    assert_eq!(lines[257], "labels unlisted=44");
+    let few = Labels {
+        shown: Vec::new(),
+        hidden: hidden(256),
+    };
+    assert_eq!(few.lines().len(), 257);
+    assert_eq!(
+        Labels::default().lines(),
+        vec!["labels shown=0 hidden=0".to_owned()]
+    );
 }

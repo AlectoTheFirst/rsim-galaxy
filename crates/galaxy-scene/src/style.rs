@@ -79,7 +79,8 @@ pub struct Style {
 impl Default for Style {
     /// Rules for the kinds site, location, room, rack, device, router, switch, l3-switch,
     /// firewall, access-point, workstation, server, laptop, load-balancer, network, function,
-    /// endpoint and application, the default look, no defined shape and the built-in materials.
+    /// endpoint and application with labels, the default look, no defined shape and the built-in
+    /// materials.
     /// The kinds device, router, switch, firewall, access-point, workstation, server, laptop and
     /// load-balancer have the shape of their name, the kind l3-switch has the layer3-switch, the
     /// kind network the cloud and the kind endpoint the workstation.
@@ -90,6 +91,7 @@ impl Default for Style {
             size,
             gap,
             margin,
+            label: true,
         };
         let kinds = [
             ("site", rule(Arrangement::Grid, [4.0, 1.0, 4.0], 1.0, 1.0)),

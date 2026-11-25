@@ -271,6 +271,9 @@ impl Viewer {
             if let Some(parent) = &node.parent {
                 text.push_str(&format!(" in={parent}"));
             }
+            if let Some(label) = &node.label {
+                text.push_str(&format!(" label={label:?}"));
+            }
             for (field, value) in &node.fields {
                 text.push_str(&format!(" {field}={value:?}"));
             }
@@ -300,8 +303,8 @@ impl Viewer {
     }
 
     /// The lines of the panel of the selection: the name, then a name and a value for the kind,
-    /// the parent and each field of the source of a node, or for the outcome, its reason, each
-    /// field of the source and each node of the path of a flow.
+    /// the label, the parent and each field of the source of a node, or for the outcome, its
+    /// reason, each field of the source and each node of the path of a flow.
     pub fn details(&self) -> Vec<(String, String)> {
         let Some(selection) = &self.selection else {
             return Vec::new();
@@ -316,6 +319,9 @@ impl Viewer {
                     (String::new(), node.id.to_string()),
                     ("kind".to_owned(), node.kind.clone()),
                 ];
+                if let Some(label) = node.label.as_deref().or(self.world.label(index)) {
+                    lines.push(("label".to_owned(), label.to_owned()));
+                }
                 if let Some(parent) = &node.parent {
                     lines.push(("in".to_owned(), parent.to_string()));
                 }
@@ -399,7 +405,8 @@ impl Viewer {
     }
 
     /// The PNG image of the frame of `width` by `height` pixels from `camera`, or from the home
-    /// view.
+    /// view, at the scale factor 1. The text is the line `<width>x<height>`, then the lines of
+    /// the labels of the frame.
     fn draw(&self, renderer: &Renderer, camera: Option<Camera>, width: u32, height: u32) -> Reply {
         let look = self.model.style().look;
         let camera = camera
@@ -411,6 +418,7 @@ impl Viewer {
             selection: self.selection.as_ref(),
             camera: &camera,
             details: &details,
+            scale: 1.0,
         };
         let image = match renderer.render(&view, width, height) {
             Ok(image) => image,
@@ -420,9 +428,11 @@ impl Viewer {
         if let Err(error) = image.write_png(&mut png) {
             return Reply::refused(error.to_string());
         }
+        let mut lines = vec![format!("{width}x{height}")];
+        lines.extend(renderer.labels(&view, width, height).lines());
         Reply {
             png: Some(png),
-            ..Reply::text(format!("{width}x{height}"))
+            ..Reply::text(lines.join("\n"))
         }
     }
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::id::ObjectId;
 use crate::json::{self, Json};
 use crate::sha256;
-use crate::world::{Outcome, OutcomeKind, RelationRefusal, Relations};
+use crate::world::{Node, Outcome, OutcomeKind, RelationRefusal, Relations};
 
 /// The versions that the reader reads.
 pub const VERSIONS: &[&str] = &["0.1"];
@@ -70,7 +70,6 @@ const CLASS_ARRAYS: [&str; 3] = ["nodes", "links", "flows"];
 /// engine operations.
 pub const NOT_SHOWN: &[&str] = &[
     "node.fields.missing",
-    "node.label",
     "node.handle",
     "link",
     "flow.fields.missing",
@@ -1119,10 +1118,11 @@ impl Reader<'_> {
         let parent = value
             .get("in")
             .and_then(|parent| self.node_id(at, "in", parent));
-        if let Some(label) = value.get("label") {
-            self.text(at, "label", label, 1, 256);
-            self.not_shown("node.label");
-        }
+        let [fewest, most] = Node::LABEL;
+        let label = value
+            .get("label")
+            .and_then(|label| self.text(at, "label", label, fewest, most))
+            .map(str::to_owned);
         if let Some(handle) = value.get("handle") {
             self.text(at, "handle", handle, 1, 256);
             self.not_shown("node.handle");
@@ -1155,7 +1155,13 @@ impl Reader<'_> {
         if let (Some(id), Some(kind), true) = (id, kind, self.refusals.is_empty())
             && let Some(id) = ObjectId::new(&id)
         {
-            let added = self.relations.add_with_fields(id, kind, parent, fields);
+            let added = self.relations.add_node(Node {
+                id,
+                kind: kind.to_owned(),
+                parent,
+                label,
+                fields,
+            });
             self.relation(at, added);
         }
     }

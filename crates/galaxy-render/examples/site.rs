@@ -22,6 +22,7 @@ fn rule(arrangement: Arrangement, size: [f64; 3]) -> Rule {
         size,
         gap: 0.5,
         margin: 0.5,
+        label: true,
     }
 }
 
@@ -105,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: None,
         camera: &camera,
         details: &[],
+        scale: 1.0,
     };
     let image = Renderer::new()?.render(&view, 1600, 1000)?;
     image.write_png(BufWriter::new(File::create(path)?))?;
