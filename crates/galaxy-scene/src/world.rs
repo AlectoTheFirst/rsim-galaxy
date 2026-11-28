@@ -75,14 +75,87 @@ pub struct Outcome {
     pub reason: Option<String>,
 }
 
-/// A flow: the nodes of its path in order, from the source to the destination, its outcome and
-/// the data of the source by field name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The unit of a magnitude.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Unit {
+    BitPerSecond,
+    PacketPerSecond,
+    Byte,
+    Packet,
+    Flow,
+}
+
+impl Unit {
+    /// The units in the order of their index.
+    pub const ALL: [Unit; 5] = [
+        Unit::BitPerSecond,
+        Unit::PacketPerSecond,
+        Unit::Byte,
+        Unit::Packet,
+        Unit::Flow,
+    ];
+
+    /// The names of the units in the order of their index.
+    pub const NAMES: &'static [&'static str] = &["bit/s", "packet/s", "byte", "packet", "flow"];
+
+    /// The names of the rate units.
+    pub const RATES: &'static str = "bit/s, packet/s";
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .position(|name| *name == text)
+            .map(|index| Self::ALL[index])
+    }
+
+    /// `true` for the count units byte, packet and flow.
+    pub fn is_count(self) -> bool {
+        matches!(self, Unit::Byte | Unit::Packet | Unit::Flow)
+    }
+}
+
+/// The quantity of the traffic of a flow: a value of 0 or more in a unit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Magnitude {
+    pub value: f64,
+    pub unit: Unit,
+}
+
+/// A flow: the nodes of its path in order, from the source to the destination, its outcome, its
+/// magnitude, its group, the flow that it answers, the data of the source for each node of its
+/// path and the data of the source by field name.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Flow {
     pub id: ObjectId,
     pub path: Vec<ObjectId>,
     pub outcome: Option<Outcome>,
+    pub magnitude: Option<Magnitude>,
+    pub group: Option<String>,
+    pub reply_to: Option<ObjectId>,
+    /// The fields of each node of the path in the order of the path, or no item.
+    pub hops: Vec<Vec<(String, String)>>,
     pub fields: Vec<(String, String)>,
+}
+
+impl Flow {
+    /// The flow along `path` with no outcome, no magnitude, no group, no reply and no data of the
+    /// source.
+    pub fn new(id: ObjectId, path: Vec<ObjectId>) -> Self {
+        Self {
+            id,
+            path,
+            outcome: None,
+            magnitude: None,
+            group: None,
+            reply_to: None,
+            hops: Vec::new(),
+            fields: Vec::new(),
+        }
+    }
 }
 
 /// Cause of a refused node or flow.
@@ -98,6 +171,14 @@ pub enum RelationRefusal {
     ShortPath { count: usize },
     /// The path of a flow has the same node 2 times in sequence.
     Repeat { node: ObjectId },
+    /// The hops of a flow are not 1 item for each node of its path.
+    Hops { count: usize, nodes: usize },
+    /// `reply_to` names no flow, or a flow with a `reply_to`.
+    NoFlow { flow: ObjectId },
+    /// The unit of a magnitude differs from the unit of the relations.
+    Unit { unit: Unit, valid: Unit },
+    /// A magnitude has a count unit, and the relations have no window.
+    Window { unit: Unit },
 }
 
 impl fmt::Display for RelationRefusal {
@@ -113,20 +194,40 @@ impl fmt::Display for RelationRefusal {
                 write!(f, "path: {count} nodes, valid: 2 or more")
             }
             RelationRefusal::Repeat { node } => write!(f, "path: {node} follows {node}"),
+            RelationRefusal::Hops { count, nodes } => {
+                write!(f, "hops: {count} items, valid: {nodes} items")
+            }
+            RelationRefusal::NoFlow { flow } => {
+                write!(f, "reply_to: {flow}, valid: a flow with no reply_to")
+            }
+            RelationRefusal::Unit { unit, valid } => {
+                write!(
+                    f,
+                    "magnitude.unit: {}, valid: {}",
+                    unit.name(),
+                    valid.name()
+                )
+            }
+            RelationRefusal::Window { unit } => {
+                write!(f, "magnitude.unit: {}, valid: {}", unit.name(), Unit::RATES)
+            }
         }
     }
 }
 
 impl std::error::Error for RelationRefusal {}
 
-/// The nodes with their containment and the flows, in the order of their addition. A parent is
-/// before its children.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The nodes with their containment and the flows, in the order of their addition, the unit of
+/// the first magnitude and the window of the magnitudes with a count unit. A parent is before its
+/// children.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Relations {
     nodes: Vec<Node>,
     index: BTreeMap<ObjectId, usize>,
     flows: Vec<Flow>,
     flow_index: BTreeMap<ObjectId, usize>,
+    unit: Option<Unit>,
+    window: Option<[String; 2]>,
 }
 
 impl Relations {
@@ -181,19 +282,20 @@ impl Relations {
     /// Adds a flow along `path` with no outcome and no data of the source. A refused flow
     /// changes nothing.
     pub fn add_flow(&mut self, id: ObjectId, path: Vec<ObjectId>) -> Result<(), RelationRefusal> {
-        self.add_flow_with_data(id, path, None, Vec::new())
+        self.add_flow_with_data(Flow::new(id, path))
     }
 
-    /// Adds a flow along `path` with its outcome and the data of the source. An empty reason of
-    /// the outcome is no reason. A refused flow changes nothing.
-    pub fn add_flow_with_data(
-        &mut self,
-        id: ObjectId,
-        path: Vec<ObjectId>,
-        outcome: Option<Outcome>,
-        fields: Vec<(String, String)>,
-    ) -> Result<(), RelationRefusal> {
-        if let Some(refusal) = self.in_use(&id) {
+    /// Adds `flow` with its outcome, its magnitude, its group, its reply, its hops and the data of
+    /// the source. An empty reason of the outcome is no reason. A refused flow changes nothing.
+    pub fn add_flow_with_data(&mut self, flow: Flow) -> Result<(), RelationRefusal> {
+        self.insert_flow(flow, true)
+    }
+
+    /// Adds `flow`. With `window` false, a count unit needs no window. A refused flow changes
+    /// nothing.
+    pub(crate) fn insert_flow(&mut self, flow: Flow, window: bool) -> Result<(), RelationRefusal> {
+        let path = &flow.path;
+        if let Some(refusal) = self.in_use(&flow.id) {
             return Err(refusal);
         }
         if path.len() < 2 {
@@ -207,18 +309,61 @@ impl Relations {
                 node: pair[0].clone(),
             });
         }
-        let outcome = outcome.map(|outcome| Outcome {
+        if !flow.hops.is_empty() && flow.hops.len() != path.len() {
+            return Err(RelationRefusal::Hops {
+                count: flow.hops.len(),
+                nodes: path.len(),
+            });
+        }
+        if let Some(request) = &flow.reply_to {
+            let answered = self
+                .flow_index
+                .get(request)
+                .is_some_and(|&index| self.flows[index].reply_to.is_none());
+            if !answered {
+                return Err(RelationRefusal::NoFlow {
+                    flow: request.clone(),
+                });
+            }
+        }
+        if let Some(magnitude) = flow.magnitude {
+            if let Some(valid) = self.unit
+                && valid != magnitude.unit
+            {
+                return Err(RelationRefusal::Unit {
+                    unit: magnitude.unit,
+                    valid,
+                });
+            }
+            if window && magnitude.unit.is_count() && self.window.is_none() {
+                return Err(RelationRefusal::Window {
+                    unit: magnitude.unit,
+                });
+            }
+            self.unit = Some(magnitude.unit);
+        }
+        let outcome = flow.outcome.map(|outcome| Outcome {
             reason: outcome.reason.filter(|reason| !reason.is_empty()),
             ..outcome
         });
-        self.flow_index.insert(id.clone(), self.flows.len());
-        self.flows.push(Flow {
-            id,
-            path,
-            outcome,
-            fields,
-        });
+        self.flow_index.insert(flow.id.clone(), self.flows.len());
+        self.flows.push(Flow { outcome, ..flow });
         Ok(())
+    }
+
+    /// The unit of the first magnitude.
+    pub fn unit(&self) -> Option<Unit> {
+        self.unit
+    }
+
+    /// The times from and to of the interval of the magnitudes with a count unit.
+    pub fn window(&self) -> Option<&[String; 2]> {
+        self.window.as_ref()
+    }
+
+    /// Sets the times from and to of the interval of the magnitudes with a count unit.
+    pub fn set_window(&mut self, window: Option<[String; 2]>) {
+        self.window = window;
     }
 
     /// The nodes in the order of their addition.
@@ -445,6 +590,11 @@ pub struct FlowLine {
     /// The distance from each segment of the line to the line of an adjacent lane.
     pub gaps: Vec<f64>,
     pub outcome: Option<Outcome>,
+    pub magnitude: Option<Magnitude>,
+    pub group: Option<String>,
+    pub reply_to: Option<ObjectId>,
+    /// The fields of each node of the path in the order of the path, or no item.
+    pub hops: Vec<Vec<(String, String)>>,
     pub fields: Vec<(String, String)>,
 }
 
@@ -458,8 +608,8 @@ pub struct Laned {
 }
 
 impl FlowLine {
-    /// The outcome, its reason and the data of the source of the flow as text: a space before
-    /// each name and value.
+    /// The outcome, its reason, the magnitude, the group, the flow that it answers and the data
+    /// of the source of the flow as text: a space before each name and value.
     pub fn data(&self) -> String {
         let mut text = String::new();
         if let Some(outcome) = &self.outcome {
@@ -467,6 +617,19 @@ impl FlowLine {
             if let Some(reason) = &outcome.reason {
                 text.push_str(&format!(" reason={reason:?}"));
             }
+        }
+        if let Some(magnitude) = &self.magnitude {
+            text.push_str(&format!(
+                " magnitude={} {}",
+                magnitude.value,
+                magnitude.unit.name()
+            ));
+        }
+        if let Some(group) = &self.group {
+            text.push_str(&format!(" group={group}"));
+        }
+        if let Some(request) = &self.reply_to {
+            text.push_str(&format!(" reply_to={request}"));
         }
         for (name, value) in &self.fields {
             text.push_str(&format!(" {name}={value:?}"));
@@ -494,6 +657,10 @@ pub struct World {
     /// parent.
     layered: BTreeMap<Option<usize>, Layered>,
     flows: Vec<FlowLine>,
+    /// The largest magnitude value of the flows, 0 with no magnitude.
+    vmax: f64,
+    unit: Option<Unit>,
+    window: Option<[String; 2]>,
     library: Library,
     kept: Kept,
 }
@@ -674,6 +841,14 @@ impl World {
             columns,
             layered,
             flows: Vec::new(),
+            vmax: relations
+                .flows
+                .iter()
+                .filter_map(|flow| flow.magnitude)
+                .map(|magnitude| magnitude.value)
+                .fold(0.0, f64::max),
+            unit: relations.unit,
+            window: relations.window.clone(),
             library: Library::default(),
             kept: Kept::default(),
         };
@@ -696,6 +871,10 @@ impl World {
                 spacing: line.spacing,
                 gaps: line.gaps,
                 outcome: flow.outcome.clone(),
+                magnitude: flow.magnitude,
+                group: flow.group.clone(),
+                reply_to: flow.reply_to.clone(),
+                hops: flow.hops.clone(),
                 fields: flow.fields.clone(),
             })
             .collect();
@@ -744,6 +923,21 @@ impl World {
         }
         let node = &self.nodes[index];
         Some(node.label.as_deref().unwrap_or(node.id.as_str()))
+    }
+
+    /// The largest magnitude value of the flows, 0 with no magnitude.
+    pub fn vmax(&self) -> f64 {
+        self.vmax
+    }
+
+    /// The unit of the magnitudes of the flows.
+    pub fn unit(&self) -> Option<Unit> {
+        self.unit
+    }
+
+    /// The times from and to of the interval of the magnitudes with a count unit.
+    pub fn window(&self) -> Option<&[String; 2]> {
+        self.window.as_ref()
     }
 
     /// The defined shapes and the materials of the style of the world.
@@ -1798,12 +1992,17 @@ impl World {
         bounds
     }
 
-    /// One line for each node in name order: the name, the kind, the parent, the own label, the
-    /// centre and the size. Then one line for each flow in name order: the name, the path, the
-    /// outcome with its reason, the data of the source and the points. Then the lines of
-    /// `Library::describe`.
+    /// The line `window` with the times from and to for a world with a window. Then one line for
+    /// each node in name order: the name, the kind, the parent, the own label, the centre and the
+    /// size. Then one line for each flow in name order: the name, the path, the outcome with its
+    /// reason, the magnitude, the group, the flow that it answers, the data of the source and the
+    /// points, and one line for each hop with fields: the index and the node of the hop and its
+    /// fields. Then the lines of `Library::describe`.
     pub fn describe(&self) -> String {
         let mut text = String::new();
+        if let Some([from, to]) = &self.window {
+            text.push_str(&format!("window from={from} to={to}\n"));
+        }
         for (id, &index) in &self.index {
             let node = &self.nodes[index];
             let placed = &self.placed[index];
@@ -1834,6 +2033,16 @@ impl World {
             text.push_str(&format!("{} flow path={}", flow.id, path.join(",")));
             text.push_str(&flow.data());
             text.push_str(&format!(" points={}\n", points.join(";")));
+            for (index, (node, fields)) in flow.path.iter().zip(&flow.hops).enumerate() {
+                if fields.is_empty() {
+                    continue;
+                }
+                text.push_str(&format!("{} hop={index} node={node}", flow.id));
+                for (name, value) in fields {
+                    text.push_str(&format!(" {name}={value:?}"));
+                }
+                text.push('\n');
+            }
         }
         text.push_str(&self.library.describe());
         text

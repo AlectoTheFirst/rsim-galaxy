@@ -6,7 +6,8 @@ use crate::id::ObjectId;
 use crate::library::{Colours, DefinedShape, Library, Material, Part, Solid};
 use crate::style::{Look, Style};
 use crate::world::{
-    Arrangement, Node, Outcome, RelationRefusal, Relations, Rule, Shape, Vec3, World,
+    Arrangement, Flow, Magnitude, Node, Outcome, RelationRefusal, Relations, Rule, Shape, Vec3,
+    World,
 };
 
 /// The rule that a `SetRule` sets.
@@ -30,10 +31,15 @@ pub enum Change {
         label: Option<String>,
         fields: Vec<(String, String)>,
     },
+    /// Adds a flow. `hops` holds the fields of each node of `path`, or no item.
     AddFlow {
         id: ObjectId,
         path: Vec<ObjectId>,
         outcome: Option<Outcome>,
+        magnitude: Option<Magnitude>,
+        group: Option<String>,
+        reply_to: Option<ObjectId>,
+        hops: Vec<Vec<(String, String)>>,
         fields: Vec<(String, String)>,
     },
     /// Sets the rule of `target`. `shape` is the name of a built-in or a defined shape. A `shape`
@@ -197,10 +203,37 @@ impl Model {
                 id,
                 path,
                 outcome,
+                magnitude,
+                group,
+                reply_to,
+                hops,
                 fields,
-            } => Arc::make_mut(&mut self.relations)
-                .add_flow_with_data(id.clone(), path.clone(), outcome.clone(), fields.clone())
-                .map_err(ChangeRefusal::Relation)?,
+            } => {
+                if let Some(magnitude) = magnitude
+                    && !(magnitude.value.is_finite() && magnitude.value >= 0.0)
+                {
+                    return Err(ChangeRefusal::Value {
+                        field: "magnitude.value".to_owned(),
+                        value: magnitude.value.to_string(),
+                        valid: "0 or more".to_owned(),
+                    });
+                }
+                if let Some(group) = group {
+                    check_name("group", group)?;
+                }
+                Arc::make_mut(&mut self.relations)
+                    .add_flow_with_data(Flow {
+                        id: id.clone(),
+                        path: path.clone(),
+                        outcome: outcome.clone(),
+                        magnitude: *magnitude,
+                        group: group.clone(),
+                        reply_to: reply_to.clone(),
+                        hops: hops.clone(),
+                        fields: fields.clone(),
+                    })
+                    .map_err(ChangeRefusal::Relation)?
+            }
             Change::SetRule {
                 target,
                 arrangement,

@@ -17,8 +17,8 @@ use text::{Atlas, Face, Fonts, Quad, Run, TEXT_SIZE, Text};
 
 use bytemuck::{Pod, Zeroable};
 use galaxy_scene::{
-    Arrangement, Colours, DefinedShape, Library, Light, Lines, Look, ObjectId, OutcomeKind, Placed,
-    Projection, Scheme, Shape, Space, World,
+    Arrangement, Colours, DefinedShape, FlowLine, Library, Light, Lines, Look, ObjectId,
+    OutcomeKind, Placed, Projection, Scale as WidthScale, Scheme, Shape, Space, Widths, World,
 };
 use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
@@ -77,6 +77,32 @@ const CASING_DEPTH: f64 = 2.5;
 const TRUNK_PIXELS: f64 = 2.0;
 /// Largest thickness of a line, as a part of the smallest lane spacing of the line.
 const LANE_LINE: f64 = 0.4;
+/// Largest lane spacing of a line.
+const LANE: f64 = 0.45;
+/// Width factor of a line with no magnitude: `LINE` at the lane spacing `LANE`.
+const LEAST: f64 = LINE / (LANE_LINE * LANE);
+/// Side of a packet as a multiple of the thickness of its line.
+const PACKET: f64 = 1.6;
+/// Distance in pixels along a line of a packet at time 0 after an arrowhead of the row every
+/// `HEAD_SPACING` pixels.
+const PACKET_OFFSET: f64 = 80.0;
+/// Distance in pixels that a packet moves along its line in 1 second of virtual time.
+const PACKET_SPEED: f64 = 40.0;
+/// Length in pixels of a dash and of a gap of the line of a reply.
+const DASH: [f64; 2] = [8.0, 6.0];
+/// Width in pixels that the casing of a branch of the group of the selected flow adds to
+/// `CASING_PIXELS` on each side.
+const BRANCH_PIXELS: f64 = 2.0;
+/// Names of the flow materials: deliver, exit and no outcome in turn, drop, loop, unknown and
+/// reply.
+const FLOW_MATERIALS: [&str; 6] = [
+    "flow-1",
+    "flow-2",
+    "flow-drop",
+    "flow-loop",
+    "flow-unknown",
+    "flow-reply",
+];
 /// Length, width and thickness of an arrowhead as multiples of the thickness of its line.
 const HEAD: [f64; 3] = [4.0, 3.6, 1.4];
 /// Largest width of an arrowhead as a part of the lane spacing.
@@ -164,6 +190,7 @@ struct Palette {
     drop: [u8; 3],
     looped: [u8; 3],
     unknown: [u8; 3],
+    reply: [u8; 3],
     selection: [u8; 3],
     symbol: [u8; 3],
     brick: [u8; 3],
@@ -187,7 +214,8 @@ fn palette(scheme: Scheme) -> Palette {
             flow: [[0x00, 0x6C, 0x78], [0x1F, 0x8A, 0x5C]],
             drop: [0xC8, 0x26, 0x1E],
             looped: [0xC2, 0x7C, 0x0E],
-            unknown: [0x7A, 0x84, 0x91],
+            unknown: [0x1A, 0x8F, 0xD8],
+            reply: [0x7B, 0x4F, 0xC9],
             selection: [0x2A, 0x52, 0xD6],
             symbol: [0x2E, 0x3B, 0x4E],
             brick: [0xB5, 0x4A, 0x36],
@@ -208,7 +236,8 @@ fn palette(scheme: Scheme) -> Palette {
             flow: [[0x5F, 0xD0, 0xD8], [0x86, 0xDE, 0xA4]],
             drop: [0xFF, 0x5C, 0x50],
             looped: [0xF5, 0xB0, 0x3C],
-            unknown: [0x9A, 0xA4, 0xB2],
+            unknown: [0x5C, 0xC4, 0xFF],
+            reply: [0xB3, 0x94, 0xF2],
             selection: [0x8F, 0xB4, 0xFF],
             symbol: [0xC8, 0xD2, 0xDE],
             brick: [0xA8, 0x46, 0x36],
@@ -412,15 +441,18 @@ impl Scale {
     }
 }
 
-/// An object of a world that a person can select.
+/// An object of a world that a person can select. A trunk holds the ids of its flows in the order
+/// of the world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
     Node(ObjectId),
     Flow(ObjectId),
+    Trunk(Vec<ObjectId>),
 }
 
 /// A world with its look, its selection, its camera, the lines of the panel of the selection (a
-/// name and a value for each line), and the scale factor of the window, 1 for an image.
+/// name and a value for each line), the scale factor of the window, 1 for an image, and the
+/// virtual time in seconds that the host program gives.
 #[derive(Clone, Copy, Debug)]
 pub struct View<'a> {
     pub world: &'a World,
@@ -429,6 +461,7 @@ pub struct View<'a> {
     pub camera: &'a Camera,
     pub details: &'a [(String, String)],
     pub scale: f32,
+    pub time: f64,
 }
 
 impl View<'_> {
@@ -493,7 +526,10 @@ impl std::error::Error for RenderError {}
 /// An instance of a mesh: the centre and the size of its box with the edge thickness in
 /// `size[3]`, the linear colour of the body slot with 1 in `colour[3]` for a lit colour, the pick
 /// value, and the reference size of its symbol: 0 for no fit, negative on y for no symbol on the
-/// face across y, and negative on z for no symbol on the face across z.
+/// face across y, and negative on z for no symbol on the face across z. The reference of a dash
+/// instance holds the period of the dashes, negative for a line toward the low end of the axis,
+/// the length of a dash, and the axis plus 0.25 plus half the phase at the low end of the box as
+/// a part of the period, all in world units.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct Instance {
@@ -539,6 +575,8 @@ struct Boxes {
     shells: Vec<Instance>,
     casings: Vec<Vec<Instance>>,
     meshes: Vec<Vec<Instance>>,
+    /// The segments of the lines of the replies, as cubes with the dash pattern.
+    dashes: Vec<Instance>,
     shadows: Vec<Instance>,
     glow: Vec<Instance>,
     objects: Vec<Selection>,
@@ -621,6 +659,7 @@ pub struct Renderer {
     floor: wgpu::RenderPipeline,
     shell: wgpu::RenderPipeline,
     casing: wgpu::RenderPipeline,
+    dash: wgpu::RenderPipeline,
     glow: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     pick: wgpu::RenderPipeline,
@@ -742,6 +781,7 @@ impl Renderer {
         let floor = pipeline("floor", format.into(), SAMPLES);
         let shell = pipeline("shell_main", format.into(), SAMPLES);
         let casing = pipeline("casing", format.into(), SAMPLES);
+        let dash = pipeline("dash_main", format.into(), SAMPLES);
         let blended = wgpu::ColorTargetState {
             format,
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -760,6 +800,7 @@ impl Renderer {
             floor,
             shell,
             casing,
+            dash,
             glow,
             shadow,
             pick,
@@ -797,6 +838,7 @@ impl Renderer {
             + boxes.shells.len()
             + boxes.casings.iter().map(Vec::len).sum::<usize>()
             + boxes.meshes.iter().map(Vec::len).sum::<usize>()
+            + boxes.dashes.len()
             + boxes.glow.len()
     }
 
@@ -919,6 +961,7 @@ impl Renderer {
         layers.extend(boxes.meshes.iter().enumerate().map(|(index, instances)| {
             layer(&self.solid, instances, registry.range(Mesh::at(index)))
         }));
+        layers.push(layer(&self.dash, &boxes.dashes, cube.clone()));
         layers.extend(boxes.casings.iter().enumerate().map(|(index, instances)| {
             layer(&self.casing, instances, registry.range(Mesh::at(index)))
         }));
@@ -1035,6 +1078,7 @@ impl Renderer {
         let layers: Vec<Layer> = [
             (Mesh::Cube.index(), &boxes.plates),
             (Mesh::CubeEdges.index(), &boxes.shells),
+            (Mesh::Cube.index(), &boxes.dashes),
         ]
         .into_iter()
         .chain(boxes.meshes.iter().enumerate())
@@ -1395,13 +1439,12 @@ fn lay_labels(
         .collect();
     let (selected, path) = match view.selection {
         Some(Selection::Node(node)) => (Some(node), Vec::new()),
-        Some(Selection::Flow(flow)) => (
+        Some(Selection::Flow(flow)) => (None, path_of(world, flow)),
+        Some(Selection::Trunk(flows)) => (
             None,
-            world
-                .flows()
-                .iter()
-                .find(|line| &line.id == flow)
-                .map(|line| line.path.clone())
+            flows
+                .first()
+                .map(|flow| path_of(world, flow))
                 .unwrap_or_default(),
         ),
         None => (None, Vec::new()),
@@ -1470,6 +1513,16 @@ fn lay_labels(
     Some((labels, quads))
 }
 
+/// The ids of the nodes of the path of the flow `flow` of `world`, or none.
+fn path_of(world: &World, flow: &ObjectId) -> Vec<ObjectId> {
+    world
+        .flows()
+        .iter()
+        .find(|line| &line.id == flow)
+        .map(|line| line.path.clone())
+        .unwrap_or_default()
+}
+
 /// The distance of the compass from the bottom left corner and its size, in pixels at the scale
 /// factor `factor`.
 fn compass_box(factor: f32) -> [f32; 2] {
@@ -1482,7 +1535,7 @@ fn compass_box(factor: f32) -> [f32; 2] {
 /// The material table of `colours` and of the materials of `library` in `scheme`: the linear
 /// colour of each material after the body slot by its index in the library, with a fourth value
 /// of 1 for a lit material and 0 for an unlit material. A built-in material with no colours has
-/// the colour of `colours`.
+/// the colour of `colours`, and a flow material with no colours is lit.
 fn materials(colours: &Palette, library: &Library, scheme: Scheme) -> [[f32; 4]; MATERIALS] {
     let slot = |rgb: [u8; 3], lit: bool| {
         let [r, g, b] = linear(rgb);
@@ -1501,12 +1554,100 @@ fn materials(colours: &Palette, library: &Library, scheme: Scheme) -> [[f32; 4];
     {
         table[index + 1] = slot(rgb, lit);
     }
+    for (name, rgb) in FLOW_MATERIALS.iter().zip(flow_palette(colours)) {
+        if let Some(entry) = library
+            .materials
+            .iter()
+            .position(|material| material.name == *name)
+            .and_then(|index| table.get_mut(index))
+        {
+            *entry = slot(rgb, true);
+        }
+    }
     for (index, material) in library.materials.iter().enumerate().skip(1) {
         if let (Some(entry), Some(colours)) = (table.get_mut(index), material.colours) {
             *entry = slot(scheme_colour(&colours, scheme), colours.lit);
         }
     }
     table
+}
+
+/// The colours of `colours` for the flow materials in the order of `FLOW_MATERIALS`.
+fn flow_palette(colours: &Palette) -> [[u8; 3]; 6] {
+    [
+        colours.flow[0],
+        colours.flow[1],
+        colours.drop,
+        colours.looped,
+        colours.unknown,
+        colours.reply,
+    ]
+}
+
+/// The colour and the lit value of each flow material of `library` in `scheme`, in the order of
+/// `FLOW_MATERIALS`: the colours of the material, or the colour of `colours` and lit for a
+/// material with no colours.
+fn flow_colours(colours: &Palette, library: &Library, scheme: Scheme) -> [([u8; 3], bool); 6] {
+    let palette = flow_palette(colours);
+    std::array::from_fn(|slot| {
+        library
+            .materials
+            .iter()
+            .find(|material| material.name == FLOW_MATERIALS[slot])
+            .and_then(|material| material.colours)
+            .map_or((palette[slot], true), |set| {
+                (scheme_colour(&set, scheme), set.lit)
+            })
+    })
+}
+
+/// The width factor of a line of the magnitude `value` in a world with the largest magnitude
+/// `vmax`: `LEAST` with no magnitude or with `vmax` 0, and 1 at `vmax` or above, also for an
+/// infinite sum of a trunk.
+fn factor(value: Option<f64>, vmax: f64, scale: WidthScale) -> f64 {
+    let Some(value) = value else {
+        return LEAST;
+    };
+    if !(vmax > 0.0 && vmax.is_finite()) || value.is_nan() {
+        return LEAST;
+    }
+    let part = (value / vmax).clamp(0.0, 1.0);
+    let rise = match scale {
+        WidthScale::Log => (1.0 + 9.0 * part).log10(),
+        WidthScale::Linear => part,
+    };
+    LEAST + (1.0 - LEAST) * rise
+}
+
+/// The width of a line of the width factor `g` at the lane spacing `spacing`, at most `LANE`.
+fn magnitude_width(g: f64, spacing: f64) -> f64 {
+    g * LANE_LINE * spacing.clamp(0.0, LANE)
+}
+
+/// The width of a line of `count` flows with the widths `uniform`: `LINE` times the square root
+/// of `count`, at most `LANE_LINE` of `spacing`.
+fn uniform_width(count: usize, spacing: f64) -> f64 {
+    (LINE * (count as f64).sqrt()).min(spacing * LANE_LINE)
+}
+
+/// The width of the line of `flows` at the lane spacing `spacing` in `look`. With the widths
+/// magnitude, a line has the factor of the sum of the magnitudes of its flows, and a trunk with
+/// no magnitude has the uniform width.
+fn line_width(flows: &[&FlowLine], spacing: f64, vmax: f64, look: &Look) -> f64 {
+    let values: Vec<f64> = flows
+        .iter()
+        .filter_map(|flow| flow.magnitude.as_ref().map(|magnitude| magnitude.value))
+        .collect();
+    match look.widths {
+        Widths::Uniform => uniform_width(flows.len(), spacing),
+        Widths::Magnitude if flows.len() > 1 && values.is_empty() => {
+            uniform_width(flows.len(), spacing)
+        }
+        Widths::Magnitude => {
+            let sum = (!values.is_empty()).then(|| values.iter().sum());
+            magnitude_width(factor(sum, vmax, look.scale), spacing)
+        }
+    }
 }
 
 /// The colour of `colours` in `scheme`.
@@ -1648,22 +1789,26 @@ fn states(view: &View, height: u32) -> States {
 /// not drawn.
 ///
 /// Each flow goes through the nearest drawn ancestor of each node of its path. Where the spacing of
-/// its line is below `TRUNK_PIXELS` pixels, flows with the same drawn path are 1 trunk, with a
-/// thickness of the line of 1 flow times the square root of their count. When a drawn path differs
-/// from the path of its flow, or a flow is in a trunk, the lines are the lanes of the drawn paths.
-/// A line has 1 thickness: that of 1 flow or of the trunk, at most `LANE_LINE` of the smallest lane
-/// spacing of the line, and `LINE_PIXELS` pixels or more on each piece. A line has the colour of
-/// its outcome and a dot where it leaves its first node. The part of a line inside a node of its
-/// path that is not open is not drawn. A line has an arrowhead every `HEAD_SPACING` pixels from the
-/// phase of its flow, on the visible stretches of its straight runs, `HEAD_CLEAR` arrowhead lengths
-/// or more from each end of a stretch and clear of the crossings with other lines, 1 arrowhead on
-/// each leg between 2 drawn nodes that has none, and an arrowhead in front of its last node. The
-/// line of a dropped flow ends in a stop mark in front of its last node, with no arrowhead on its
-/// last straight run. The width of an arrowhead and of a stop mark keeps to the lane spacing of its
-/// segment. Each segment, dot, arrowhead and stop mark of a line has a casing in the ground colour,
-/// but a lane change shorter than `JOG`. Each segment of a selected flow has a casing in the
-/// selection colour, and its other marks have none. The look with ground has a floor grid under the
-/// nodes with no parent.
+/// its line is below `TRUNK_PIXELS` pixels, flows with the same drawn path and the same reply mark
+/// are 1 trunk. When a drawn path differs from the path of its flow, or a flow is in a trunk, the
+/// lines are the lanes of the drawn paths. A line has 1 thickness from `line_width`, and
+/// `LINE_PIXELS` pixels or more on each piece. A line has the colour of its flow material and a dot
+/// where it leaves its first node. The segments of a reply are dashes of `DASH` pixels from the
+/// start dot. A line has a packet every `HEAD_SPACING` pixels, `PACKET_OFFSET` pixels after each
+/// place of an arrowhead at time 0 and `PACKET_SPEED` pixels further for each second of
+/// `View::time`, `HEAD_CLEAR` arrowhead lengths or more from each end of a visible stretch. The
+/// part of a line inside a node of its path that is not open is not drawn. A line has an arrowhead
+/// every `HEAD_SPACING` pixels from the phase of its flow, on the visible stretches of its straight
+/// runs, `HEAD_CLEAR` arrowhead lengths or more from each end of a stretch and clear of the
+/// crossings with other lines, 1 arrowhead on each leg between 2 drawn nodes that has none, and an
+/// arrowhead in front of its last node. The line of a dropped flow ends in a stop mark in front of
+/// its last node, with no arrowhead on its last straight run. The width of an arrowhead and of a
+/// stop mark keeps to the lane spacing of its segment. Each segment, dot, arrowhead and stop mark
+/// of a line has a casing in the ground colour, but a lane change shorter than `JOG`. Each segment
+/// of a selected flow has a casing in the selection colour, and its other marks have none. Each
+/// segment of another branch of the group of a selected flow has a casing `BRANCH_PIXELS` wider in
+/// the middle of the selection colour and the ground colour. The look with ground has a floor grid
+/// under the nodes with no parent.
 fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
     let States {
         shown,
@@ -1693,6 +1838,7 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         shells: Vec::new(),
         casings: vec![Vec::new(); count],
         meshes: vec![Vec::new(); count],
+        dashes: Vec::new(),
         shadows: Vec::new(),
         glow: Vec::new(),
         objects: Vec::new(),
@@ -1895,7 +2041,7 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         index = world.parent(index)?;
     };
     let mut strokes: Vec<Stroke> = Vec::new();
-    let mut trunks: BTreeMap<Vec<usize>, Vec<usize>> = BTreeMap::new();
+    let mut trunks: BTreeMap<(Vec<usize>, bool), Vec<usize>> = BTreeMap::new();
     for (number, flow) in world.flows().iter().enumerate() {
         let mut path: Vec<usize> = Vec::new();
         for &node in &flow.nodes {
@@ -1910,7 +2056,10 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         }
         let probe = flow.points[flow.points.len() / 2];
         if flow.spacing / pixel(probe) < TRUNK_PIXELS {
-            trunks.entry(path).or_default().push(number);
+            trunks
+                .entry((path, flow.reply_to.is_some()))
+                .or_default()
+                .push(number);
             continue;
         }
         strokes.push(Stroke {
@@ -1921,7 +2070,7 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
             flows: vec![number],
         });
     }
-    strokes.extend(trunks.into_iter().map(|(path, flows)| Stroke {
+    strokes.extend(trunks.into_iter().map(|((path, _), flows)| Stroke {
         points: Vec::new(),
         spacing: 0.0,
         gaps: Vec::new(),
@@ -1947,7 +2096,26 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         }
     }
     let crossings = crossings(&strokes);
+    let tints = flow_colours(&colours, library, look.scheme);
+    let vmax = world.vmax();
+    let time = if view.time.is_finite() {
+        view.time
+    } else {
+        0.0
+    };
+    let drift = PACKET_OFFSET + PACKET_SPEED * time;
+    let selected_group = match view.selection {
+        Some(Selection::Flow(id)) => world
+            .flows()
+            .iter()
+            .find(|flow| &flow.id == id)
+            .and_then(|flow| flow.group.as_ref()),
+        _ => None,
+    };
+    let branch_rgb: [u8; 3] =
+        std::array::from_fn(|channel| mix(colours.selection[channel], colours.ground[channel]));
     let mut family = 0;
+    let mut turns: BTreeMap<&str, usize> = BTreeMap::new();
     for (place, stroke) in strokes.iter().enumerate() {
         if !stroke
             .points
@@ -1962,11 +2130,26 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
             .iter()
             .map(|&number| &world.flows()[number])
             .collect();
-        boxes.objects.push(Selection::Flow(flows[0].id.clone()));
+        boxes.objects.push(if flows.len() > 1 {
+            Selection::Trunk(flows.iter().map(|flow| flow.id.clone()).collect())
+        } else {
+            Selection::Flow(flows[0].id.clone())
+        });
         let pick = boxes.objects.len() as u32;
-        let selected = flows
-            .iter()
-            .any(|flow| view.selection == Some(&Selection::Flow(flow.id.clone())));
+        let selected = flows.iter().any(|flow| match view.selection {
+            Some(Selection::Flow(id)) => id == &flow.id,
+            Some(Selection::Trunk(ids)) => ids.contains(&flow.id),
+            _ => false,
+        });
+        let branch = !selected
+            && selected_group
+                .is_some_and(|group| flows.iter().any(|flow| flow.group.as_ref() == Some(group)));
+        let reply = flows[0].reply_to.is_some();
+        let group = flows[0].group.as_deref().filter(|group| {
+            flows
+                .iter()
+                .all(|flow| flow.group.as_deref() == Some(*group))
+        });
         let kinds: Vec<Option<OutcomeKind>> = flows
             .iter()
             .map(|flow| flow.outcome.as_ref().map(|outcome| outcome.kind))
@@ -1976,19 +2159,29 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         } else {
             None
         };
-        let rgb = match kind {
-            Some(OutcomeKind::Drop) => colours.drop,
-            Some(OutcomeKind::Loop) => colours.looped,
-            Some(OutcomeKind::Unknown) => colours.unknown,
+        let (rgb, lit) = match kind {
+            Some(OutcomeKind::Drop) => tints[2],
+            Some(OutcomeKind::Loop) => tints[3],
+            Some(OutcomeKind::Unknown) => tints[4],
+            _ if reply => tints[5],
             _ => {
-                family += 1;
-                colours.flow[(family - 1) % colours.flow.len()]
+                let mut next = || {
+                    family += 1;
+                    family - 1
+                };
+                let turn = match group {
+                    Some(group) => *turns.entry(group).or_insert_with(next),
+                    None => next(),
+                };
+                tints[turn % 2]
             }
         };
-        let width = (LINE * (flows.len() as f64).sqrt()).min(stroke.spacing * LANE_LINE);
+        let width = line_width(&flows, stroke.spacing, vmax, look);
         let thickness = |point: [f64; 3]| width.max(LINE_PIXELS * pixel(point));
         let (casing_rgb, casing_pixels) = if selected {
             (colours.selection, HALO_PIXELS)
+        } else if branch {
+            (branch_rgb, CASING_PIXELS + BRANCH_PIXELS)
         } else {
             (colours.ground, CASING_PIXELS)
         };
@@ -2008,7 +2201,7 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
                 return;
             }
             let middle = [0, 1, 2].map(|axis| (low[axis] + high[axis]) / 2.0);
-            let border = casing_pixels * pixel(middle);
+            let border = CASING_PIXELS * pixel(middle);
             let low = low.map(|value| value - border);
             let high = high.map(|value| value + border);
             let depth = CASING_DEPTH
@@ -2019,7 +2212,7 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
                 &mut boxes.casings[mesh.index()],
                 low,
                 high,
-                casing_rgb,
+                colours.ground,
                 false,
                 0,
             );
@@ -2130,8 +2323,20 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
                 });
             }
         }
+        let mut walked = 0.0;
+        let mut last = points.first().copied();
         for (pair, jog) in pieces {
             let middle = [0, 1, 2].map(|axis| (pair[0][axis] + pair[1][axis]) / 2.0);
+            let units = pixel(middle);
+            let distance = |from: [f64; 3], to: [f64; 3]| {
+                (0..3)
+                    .map(|axis| (to[axis] - from[axis]).abs())
+                    .sum::<f64>()
+            };
+            walked += last.map_or(0.0, |last| distance(last, pair[0])) / units;
+            let start = walked;
+            walked += distance(pair[0], pair[1]) / units;
+            last = Some(pair[1]);
             let thickness = thickness(middle);
             let segment = |thickness: f64| {
                 (
@@ -2143,14 +2348,29 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
             if !seen(low, high) {
                 continue;
             }
-            push(
-                &mut boxes.meshes[Mesh::Cube.index()],
-                low,
-                high,
-                rgb,
-                false,
-                pick,
-            );
+            if reply {
+                let axis = axis_of(&pair).unwrap_or(0);
+                let sign = (pair[1][axis] - pair[0][axis]).signum();
+                let period = (DASH[0] + DASH[1]) * units;
+                let phase = (start * units + sign * (low[axis] - pair[0][axis])).rem_euclid(period);
+                push(&mut boxes.dashes, low, high, rgb, false, pick);
+                if let Some(instance) = boxes.dashes.last_mut() {
+                    instance.reference = [
+                        (sign * period) as f32,
+                        (DASH[0] * units) as f32,
+                        (axis as f64 + 0.25 + 0.5 * phase / period) as f32,
+                    ];
+                }
+            } else {
+                push(
+                    &mut boxes.meshes[Mesh::Cube.index()],
+                    low,
+                    high,
+                    rgb,
+                    false,
+                    pick,
+                );
+            }
             if look.lines == Lines::Glow {
                 let (low, high) = segment(thickness * GLOW);
                 push(&mut boxes.glow, low, high, rgb, false, 0);
@@ -2301,8 +2521,55 @@ fn boxes(view: &View, width: u32, height: u32, states: &States) -> Boxes {
         for (tip, axis, sign, length, gap) in tips {
             head(tip, axis, sign, length, gap, &mut boxes);
         }
+        let start = (phase + drift).rem_euclid(HEAD_SPACING);
+        for span in &spans {
+            let [low, high] = span.ends;
+            let first = low + HEAD_CLEAR * span.length;
+            let last = high - HEAD_CLEAR * span.length;
+            let count_at = |at: f64| (span.pixels + (at - low) / span.units - start) / HEAD_SPACING;
+            let Some([from, to]) = clip(
+                &planes,
+                span.origin,
+                span.axis,
+                span.sign,
+                [first, last],
+                span.length,
+            ) else {
+                continue;
+            };
+            let least = count_at(from).ceil().max(0.0);
+            let most = count_at(to).floor();
+            if !(least.is_finite() && most.is_finite()) || least > most {
+                continue;
+            }
+            let packets = ((most - least) as usize).saturating_add(1).min(HEAD_LIMIT);
+            for step in 0..packets {
+                let count = least + step as f64;
+                let at = low + (start + count * HEAD_SPACING - span.pixels) * span.units;
+                let mut centre = span.origin;
+                centre[span.axis] = span.sign * at;
+                let half = PACKET * thickness(centre) / 2.0;
+                let low = centre.map(|value| value - half);
+                let high = centre.map(|value| value + half);
+                if seen(low, high) {
+                    push(
+                        &mut boxes.meshes[Mesh::Cube.index()],
+                        low,
+                        high,
+                        rgb,
+                        lit,
+                        0,
+                    );
+                }
+            }
+        }
     }
     boxes
+}
+
+/// The middle of 2 channels of sRGB colours.
+fn mix(first: u8, second: u8) -> u8 {
+    ((u16::from(first) + u16::from(second)) / 2) as u8
 }
 
 /// The line of 1 flow, or of the flows with the same drawn path as 1 trunk: its points in its
@@ -3057,4 +3324,102 @@ fn linear(rgb: [u8; 3]) -> [f32; 3] {
         })
     });
     rgb.map(|channel| table[usize::from(channel)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use galaxy_scene::{Magnitude, Unit};
+
+    fn close(value: f64, expected: f64) {
+        assert!((value - expected).abs() < 1e-12, "{value} != {expected}");
+    }
+
+    fn flow(id: &str, value: Option<f64>) -> FlowLine {
+        FlowLine {
+            id: ObjectId::new(id).unwrap(),
+            path: Vec::new(),
+            nodes: Vec::new(),
+            points: Vec::new(),
+            spacing: LANE,
+            gaps: Vec::new(),
+            outcome: None,
+            magnitude: value.map(|value| Magnitude {
+                value,
+                unit: Unit::BitPerSecond,
+            }),
+            group: None,
+            reply_to: None,
+            hops: Vec::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn factor_of_zero_and_of_vmax_in_both_scales() {
+        for scale in [WidthScale::Log, WidthScale::Linear] {
+            close(factor(Some(0.0), 100.0, scale), LEAST);
+            close(factor(Some(100.0), 100.0, scale), 1.0);
+        }
+        close(
+            factor(Some(50.0), 100.0, WidthScale::Log),
+            LEAST + (1.0 - LEAST) * 5.5_f64.log10(),
+        );
+        close(
+            factor(Some(50.0), 100.0, WidthScale::Linear),
+            LEAST + (1.0 - LEAST) * 0.5,
+        );
+    }
+
+    #[test]
+    fn factor_of_a_missing_magnitude_and_of_vmax_zero() {
+        for scale in [WidthScale::Log, WidthScale::Linear] {
+            close(factor(None, 100.0, scale), LEAST);
+            close(factor(Some(0.0), 0.0, scale), LEAST);
+            close(factor(None, 0.0, scale), LEAST);
+            close(factor(Some(f64::INFINITY), 100.0, scale), 1.0);
+        }
+        close(LEAST, 0.07 / 0.18);
+    }
+
+    #[test]
+    fn width_at_a_spacing_of_0_45_and_of_0_2() {
+        close(magnitude_width(LEAST, 0.45), 0.07);
+        close(magnitude_width(1.0, 0.45), 0.18);
+        close(magnitude_width(LEAST, 0.2), LEAST * 0.4 * 0.2);
+        close(magnitude_width(1.0, 0.2), 0.08);
+        close(magnitude_width(1.0, 0.9), 0.18);
+        close(uniform_width(1, 0.45), 0.07);
+        close(uniform_width(4, 0.45), 0.14);
+        close(uniform_width(4, 0.2), 0.08);
+    }
+
+    #[test]
+    fn trunk_width_from_the_sum_of_its_magnitudes() {
+        let look = Look::default();
+        let [a, b, c] = [
+            flow("a", Some(20.0)),
+            flow("b", Some(30.0)),
+            flow("c", None),
+        ];
+        close(
+            line_width(&[&a, &b, &c], 0.45, 100.0, &look),
+            magnitude_width(factor(Some(50.0), 100.0, WidthScale::Log), 0.45),
+        );
+        close(line_width(&[&a, &b], 0.45, 30.0, &look), 0.18);
+        let [d, e] = [flow("d", None), flow("e", None)];
+        close(
+            line_width(&[&d, &e], 0.45, 100.0, &look),
+            uniform_width(2, 0.45),
+        );
+        close(line_width(&[&d], 0.45, 100.0, &look), 0.07);
+        let uniform = Look {
+            widths: Widths::Uniform,
+            ..Look::default()
+        };
+        close(
+            line_width(&[&a, &b], 0.45, 100.0, &uniform),
+            uniform_width(2, 0.45),
+        );
+    }
 }

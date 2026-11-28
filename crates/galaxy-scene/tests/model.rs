@@ -1,7 +1,8 @@
 use galaxy_scene::wire::{self, TOOLS, WireRefusal};
 use galaxy_scene::{
     Arrangement, Axis, Change, ChangeRefusal, Colours, Framing, Json, Library, Lines, Load, Look,
-    Material, Model, ObjectId, Outcome, OutcomeKind, Part, RuleTarget, Scheme, Shape, Solid, Style,
+    Magnitude, Material, Model, ObjectId, Outcome, OutcomeKind, Part, RuleTarget, Scheme, Shape,
+    Solid, Style, Unit,
 };
 
 fn id(name: &str) -> ObjectId {
@@ -996,7 +997,7 @@ fn refused_shape_or_material_changes_nothing_and_names_the_cause_and_the_valid_v
                 r#"{"solid":"box","at":[0,0,0],"size":[1,1,1],"material":"chrome"}"#,
                 "",
             ),
-            "parts.0.material: chrome, valid: body, symbol, brick, flame, mortar, flame-core, badge",
+            "parts.0.material: chrome, valid: body, symbol, brick, flame, mortar, flame-core, flow-1, flow-2, flow-drop, flow-loop, flow-unknown, flow-reply, badge",
         ),
         (
             shape(&prism("[0,0],[0.5,0]"), ""),
@@ -1064,7 +1065,7 @@ fn refused_shape_or_material_changes_nothing_and_names_the_cause_and_the_valid_v
         .apply(
             call(
                 "set_material",
-                r##"{"name":"m6","light":"#303030","dark":"#404040"}"##,
+                r##"{"name":"m12","light":"#303030","dark":"#404040"}"##,
             )
             .unwrap(),
         )
@@ -1190,4 +1191,283 @@ fn add_node_after_a_load_keeps_the_load_and_undo_gives_the_model_before() {
     assert_eq!(model, loaded);
     assert_eq!(model.undo(), Some(Change::Load(load)));
     assert_eq!(model, Model::replay(Style::default(), &site_log()).unwrap());
+}
+
+/// The flow `request` from the client through the firewall to the DNS server with each member.
+const REQUEST: &str = r#"{"name":"request","path":["client","fw-01","dns"],"magnitude":{"value":1200000000,"unit":"bit/s"},"group":"q1","hops":[{"fields":{"ingress":"eth0"}},{},{"fields":{"result":"deliver","hits":2}}]}"#;
+
+#[test]
+fn flow_with_each_member_gives_the_same_relations_after_undo_and_replay() {
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    model.apply(call("add_flow", REQUEST).unwrap()).unwrap();
+    let before = model.clone();
+    let reply = call(
+        "add_flow",
+        r#"{"name":"reply","path":["dns","fw-01","client"],"outcome":{"kind":"deliver"},"magnitude":{"value":0,"unit":"bit/s"},"reply_to":"request"}"#,
+    )
+    .unwrap();
+    model.apply(reply.clone()).unwrap();
+    let flows = model.relations().flows();
+    let request = &flows[1];
+    assert_eq!(
+        request.magnitude,
+        Some(Magnitude {
+            value: 1.2e9,
+            unit: Unit::BitPerSecond,
+        })
+    );
+    assert_eq!(request.group.as_deref(), Some("q1"));
+    let text = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        request.hops,
+        [
+            text(&[("ingress", "eth0")]),
+            Vec::new(),
+            text(&[("result", "deliver"), ("hits", "2")]),
+        ]
+    );
+    assert_eq!(flows[2].reply_to, Some(id("request")));
+    assert_eq!(model.relations().unit(), Some(Unit::BitPerSecond));
+    let replayed = Model::replay(Style::default(), model.log()).unwrap();
+    assert_eq!(replayed.relations(), model.relations());
+    assert_eq!(model.undo(), Some(reply));
+    assert_eq!(model, before);
+}
+
+#[test]
+fn each_refusal_of_add_flow_names_the_member_and_the_valid_values() {
+    let flow =
+        |members: &str| format!(r#"{{"name":"f","path":["client","fw-01","dns"],{members}}}"#);
+    let cases = [
+        (
+            r#""magnitude":{"value":-1,"unit":"bit/s"}"#,
+            "magnitude.value: -1, valid: 0 or more",
+        ),
+        (
+            r#""magnitude":{"value":1,"unit":"bit"}"#,
+            "magnitude.unit: bit, valid: bit/s, packet/s, byte, packet, flow",
+        ),
+        (
+            r#""group":"q 1""#,
+            "group: q 1, valid: 1 to 64 ASCII letters, digits, -, _ and .",
+        ),
+        (r#""hops":[{},{}]"#, "hops: 2 items, valid: 3 items"),
+        (
+            r#""hops":[{},{"fields":{"note":""}},{}]"#,
+            "hops.1.fields.note: 0 characters, valid: 1 to 1024 characters",
+        ),
+        (
+            r#""hops":[{},{"fields":{"a b":"x"}},{}]"#,
+            "hops.1.fields: a b, valid: 1 to 64 ASCII letters, digits, -, _ and .",
+        ),
+        (r#""magnitude":3"#, "magnitude: expected object"),
+        (
+            r#""magnitude":{"unit":"bit/s"}"#,
+            "magnitude.value: missing",
+        ),
+        (r#""magnitude":{"value":1}"#, "magnitude.unit: missing"),
+        (
+            r#""magnitude":{"value":"1","unit":"bit/s"}"#,
+            "magnitude.value: expected number",
+        ),
+        (
+            r#""magnitude":{"value":1,"unit":2}"#,
+            "magnitude.unit: expected string",
+        ),
+        (r#""group":3"#, "group: expected string"),
+        (r#""reply_to":3"#, "reply_to: expected string"),
+        (r#""hops":{}"#, "hops: expected array of objects"),
+        (r#""hops":[{},3,{}]"#, "hops: expected array of objects"),
+    ];
+    for (members, text) in cases {
+        let refusal = call("add_flow", &flow(members)).unwrap_err();
+        assert_eq!(refusal.to_string(), text, "{members}");
+    }
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    model.apply(call("add_flow", REQUEST).unwrap()).unwrap();
+    model
+        .apply(
+            call(
+                "add_flow",
+                r#"{"name":"reply","path":["dns","client"],"reply_to":"request"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let before = model.clone();
+    let cases = [
+        (
+            r#""magnitude":{"value":1,"unit":"packet/s"}"#,
+            "magnitude.unit: packet/s, valid: bit/s",
+        ),
+        (
+            r#""reply_to":"answer""#,
+            "reply_to: answer, valid: a flow with no reply_to",
+        ),
+        (
+            r#""reply_to":"reply""#,
+            "reply_to: reply, valid: a flow with no reply_to",
+        ),
+    ];
+    for (members, text) in cases {
+        let refusal = model
+            .apply(call("add_flow", &flow(members)).unwrap())
+            .unwrap_err();
+        assert_eq!(refusal.to_string(), text, "{members}");
+        assert_eq!(model, before);
+    }
+    let direct = |magnitude, group: Option<&str>, hops| Change::AddFlow {
+        id: id("f"),
+        path: vec![id("client"), id("dns")],
+        outcome: None,
+        magnitude,
+        group: group.map(str::to_owned),
+        reply_to: None,
+        hops,
+        fields: Vec::new(),
+    };
+    let cases = [
+        (
+            direct(
+                Some(Magnitude {
+                    value: f64::NAN,
+                    unit: Unit::BitPerSecond,
+                }),
+                None,
+                Vec::new(),
+            ),
+            "magnitude.value: NaN, valid: 0 or more",
+        ),
+        (
+            direct(None, Some(""), Vec::new()),
+            "group: \"\", valid: 1 to 64 ASCII letters, digits, -, _ and .",
+        ),
+        (
+            direct(None, None, vec![Vec::new()]),
+            "hops: 1 items, valid: 2 items",
+        ),
+    ];
+    for (change, text) in cases {
+        let refusal = model.apply(change).unwrap_err();
+        assert_eq!(refusal.to_string(), text);
+        assert_eq!(model, before);
+    }
+}
+
+#[test]
+fn count_unit_needs_the_window_of_a_load() {
+    let mut model = Model::replay(Style::default(), &site_log()).unwrap();
+    let before = model.clone();
+    let count = call(
+        "add_flow",
+        r#"{"name":"f","path":["client","dns"],"magnitude":{"value":3,"unit":"byte"}}"#,
+    )
+    .unwrap();
+    let refusal = model.apply(count).unwrap_err();
+    assert_eq!(
+        refusal.to_string(),
+        "magnitude.unit: byte, valid: bit/s, packet/s"
+    );
+    assert_eq!(model, before);
+    let windowed = DOCUMENT.replace(
+        r#""query": "q"}"#,
+        r#""query": "q", "window": {"from": "2026-11-23T12:00:00Z", "to": "2026-11-23T12:01:00Z"}}"#,
+    );
+    let load = Load::read("saved", "q", windowed.as_bytes(), Framing::Text).unwrap();
+    model.apply(Change::Load(load)).unwrap();
+    let count = call(
+        "add_flow",
+        r#"{"name":"f","path":["site-a","dns"],"magnitude":{"value":3,"unit":"byte"}}"#,
+    )
+    .unwrap();
+    model.apply(count).unwrap();
+    assert_eq!(model.relations().unit(), Some(Unit::Byte));
+    model.apply(Change::Clear).unwrap();
+    assert_eq!(model.relations().window(), None);
+}
+
+/// The names of the flow materials, after `flame-core`.
+const FLOW_MATERIALS: [&str; 6] = [
+    "flow-1",
+    "flow-2",
+    "flow-drop",
+    "flow-loop",
+    "flow-unknown",
+    "flow-reply",
+];
+
+#[test]
+fn set_material_sets_the_colours_of_each_flow_material() {
+    assert_eq!(
+        Material::BUILT_IN[5..],
+        ["flame-core"]
+            .into_iter()
+            .chain(FLOW_MATERIALS)
+            .collect::<Vec<_>>()
+    );
+    let library = Library::default();
+    assert!(FLOW_MATERIALS.iter().all(|name| {
+        library.materials[library.material(name).unwrap()]
+            .colours
+            .is_none()
+    }));
+    let mut model = Model::new(Style::default());
+    for name in FLOW_MATERIALS {
+        let change = call(
+            "set_material",
+            &format!(r##"{{"name":"{name}","light":"#1A8FD8","dark":"#5CC4FF","lit":false}}"##),
+        )
+        .unwrap();
+        model.apply(change).unwrap();
+    }
+    let library = &model.style().library;
+    assert_eq!(library.materials.len(), Material::BUILT_IN.len());
+    for (offset, name) in FLOW_MATERIALS.iter().enumerate() {
+        let index = library.material(name).unwrap();
+        assert_eq!(index, 6 + offset);
+        assert_eq!(
+            library.materials[index].colours,
+            Some(Colours {
+                light: [0x1A, 0x8F, 0xD8],
+                dark: [0x5C, 0xC4, 0xFF],
+                lit: false,
+            })
+        );
+    }
+    assert!(
+        model
+            .world()
+            .describe()
+            .contains("material:flow-unknown light=#1A8FD8 dark=#5CC4FF lit=false\n")
+    );
+}
+
+#[test]
+fn library_holds_64_materials_with_the_12_built_in_materials() {
+    assert_eq!(Material::BUILT_IN.len(), 12);
+    let mut model = Model::new(Style::default());
+    for index in 0..52 {
+        let change = call(
+            "set_material",
+            &format!(r##"{{"name":"m{index}","light":"#101010","dark":"#202020"}}"##),
+        )
+        .unwrap();
+        model.apply(change).unwrap();
+    }
+    assert_eq!(model.style().library.materials.len(), Library::MATERIALS);
+    let refusal = model
+        .apply(
+            call(
+                "set_material",
+                r##"{"name":"m52","light":"#101010","dark":"#202020"}"##,
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(refusal.to_string(), "materials: 65, valid: 64 at most");
 }

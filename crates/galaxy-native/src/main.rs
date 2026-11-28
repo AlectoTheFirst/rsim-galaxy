@@ -6,18 +6,21 @@
 //! each `{"name":...,"arguments":...}`. A `load_view` with `sha256` reads the kept document of
 //! that hash and sends no request. `--png <file>` writes the frame of the home view to a PNG file
 //! and the label lines of the frame to the standard error, and opens no window. `--width` and
-//! `--height` give its size, and `--select <name>` selects a node or a flow. `--log <file>`
-//! writes the operation log as JSON lines after each change, an operation file of the same form
-//! with the `sha256` of each load. `--mcp` serves the tools on MCP over standard input and
-//! output. The window draws at its scale factor.
+//! `--height` give its size, `--time <seconds>` its virtual time, and `--select <name>` selects a
+//! node or a flow. `--log <file>` writes the operation log as JSON lines after each change, an
+//! operation file of the same form with the `sha256` of each load. `--mcp` serves the tools on
+//! MCP over standard input and output. The window draws at its scale factor.
 //!
 //! In the window, a drag turns the camera around its target, the wheel moves it nearer or
 //! farther, a click selects the object below the pointer and shows its panel, and Home gives the
-//! home view.
+//! home view. The time line plays the virtual time of the packets: Space plays or pauses it, `.`
+//! and `,` step it 1 second forward and back, `]` and `[` double and halve its speed, and `0`
+//! sets it to 0. The title of the window holds the time and the speed.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
+use std::time::Instant;
 
 use galaxy_native::sources::Sources;
 use galaxy_native::viewer::{Reply, Viewer};
@@ -42,6 +45,10 @@ const WINDOW: [f32; 2] = [1280.0, 800.0];
 const REACH: f32 = 1000.0;
 /// Smallest and largest width and height of the frame of `--png`.
 const PNG: [u32; 2] = [16, 4096];
+/// Virtual seconds of a step of the time line.
+const STEP: f64 = 1.0;
+/// Smallest and largest speed of the time line in virtual seconds for each second of the clock.
+const SPEED: [f64; 2] = [1.0 / 64.0, 64.0];
 
 /// A tool call or a read load from the MCP thread, with the channel of its answer.
 struct Request {
@@ -52,6 +59,59 @@ struct Request {
 enum Call {
     Tool { name: String, arguments: Json },
     Load(Load),
+}
+
+/// The virtual time of the frames: its position in seconds, its speed in virtual seconds for each
+/// second of the clock of the window, and the instant of the clock of the last advance while it
+/// plays.
+#[derive(Clone, Copy, Debug)]
+struct Timeline {
+    position: f64,
+    speed: f64,
+    playing: Option<Instant>,
+}
+
+impl Timeline {
+    /// Advances the position by the speed for each second of the clock since the last advance.
+    fn advance(&mut self) {
+        if let Some(last) = self.playing {
+            let now = Instant::now();
+            self.position += now.duration_since(last).as_secs_f64() * self.speed;
+            self.playing = Some(now);
+        }
+    }
+
+    fn toggle(&mut self) {
+        self.advance();
+        self.playing = match self.playing {
+            Some(_) => None,
+            None => Some(Instant::now()),
+        };
+    }
+
+    /// Sets the position to `position`, at least 0.
+    fn set(&mut self, position: f64) {
+        self.advance();
+        self.position = position.max(0.0);
+    }
+
+    fn scale_speed(&mut self, factor: f64) {
+        self.advance();
+        self.speed = (self.speed * factor).clamp(SPEED[0], SPEED[1]);
+    }
+
+    /// The title of the window with the position to 0.1 s, the speed and the state.
+    fn title(&self) -> String {
+        let state = if self.playing.is_some() {
+            "playing"
+        } else {
+            "paused"
+        };
+        format!(
+            "{TITLE} {:.1} s speed {} {state}",
+            self.position, self.speed
+        )
+    }
 }
 
 /// A camera on a sphere around its target.
@@ -132,6 +192,9 @@ struct App {
     pointer: PhysicalPosition<f64>,
     press: Option<PhysicalPosition<f64>>,
     dragged: bool,
+    timeline: Timeline,
+    /// The title of the window.
+    title: String,
 }
 
 impl App {
@@ -147,7 +210,43 @@ impl App {
             pointer: PhysicalPosition::new(0.0, 0.0),
             press: None,
             dragged: false,
+            timeline: Timeline {
+                position: 0.0,
+                speed: 1.0,
+                playing: Some(Instant::now()),
+            },
+            title: TITLE.to_owned(),
         }
+    }
+
+    /// Writes the title of the time line when it differs from the title of the window.
+    fn show_time(&mut self) {
+        let title = self.timeline.title();
+        if let Some(display) = &self.display
+            && title != self.title
+        {
+            display.window.set_title(&title);
+            self.title = title;
+        }
+    }
+
+    /// Applies the key `key` to the time line. `false` for a key of no command.
+    fn time_key(&mut self, key: &Key) -> bool {
+        match key {
+            Key::Named(NamedKey::Space) => self.timeline.toggle(),
+            Key::Character(text) => match text.as_str() {
+                "." => self.timeline.set(self.timeline.position + STEP),
+                "," => self.timeline.set(self.timeline.position - STEP),
+                "]" => self.timeline.scale_speed(2.0),
+                "[" => self.timeline.scale_speed(0.5),
+                "0" => self.timeline.set(0.0),
+                _ => return false,
+            },
+            _ => return false,
+        }
+        self.show_time();
+        self.redraw_later();
+        true
     }
 
     fn home(&mut self) {
@@ -222,6 +321,8 @@ impl App {
         };
         display.retried = false;
         let target = frame.texture.create_view(&Default::default());
+        self.timeline.advance();
+        self.viewer.time = self.timeline.position;
         let look = self.viewer.model.style().look;
         let camera = self.orbit.camera();
         let details = self.viewer.details();
@@ -232,12 +333,17 @@ impl App {
             camera: &camera,
             details: &details,
             scale: display.window.scale_factor() as f32,
+            time: self.viewer.time,
         };
         display
             .renderer
             .draw(&view, &target, display.config.width, display.config.height);
         display.window.pre_present_notify();
         display.renderer.queue().present(frame);
+        if self.timeline.playing.is_some() && !self.viewer.world.flows().is_empty() {
+            display.window.request_redraw();
+        }
+        self.show_time();
     }
 
     fn select(&mut self) {
@@ -253,6 +359,7 @@ impl App {
             camera: &camera,
             details: &[],
             scale: display.window.scale_factor() as f32,
+            time: self.viewer.time,
         };
         let picked = display.renderer.pick(
             &view,
@@ -268,6 +375,12 @@ impl App {
                 None
             }
         };
+        self.viewer.hop = self.viewer.nearest_hop(
+            &camera,
+            display.config.width,
+            display.config.height,
+            [self.pointer.x as f32, self.pointer.y as f32],
+        );
         display.window.request_redraw();
     }
 }
@@ -282,6 +395,7 @@ impl ApplicationHandler<Request> for App {
                 display.window.request_redraw();
                 self.display = Some(display);
                 self.home();
+                self.show_time();
             }
             Err(error) => {
                 eprintln!("window: {error}");
@@ -372,11 +486,12 @@ impl ApplicationHandler<Request> for App {
                 self.orbit.zoom(steps);
                 self.redraw_later();
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Home) =>
-            {
-                self.home();
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if event.logical_key == Key::Named(NamedKey::Home) {
+                    self.home();
+                } else if !event.repeat || event.logical_key != Key::Named(NamedKey::Space) {
+                    self.time_key(&event.logical_key);
+                }
             }
             _ => {}
         }
@@ -392,6 +507,7 @@ struct Arguments {
     mcp: bool,
     select: Option<String>,
     log: Option<String>,
+    time: f64,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -404,6 +520,7 @@ fn arguments() -> Result<Arguments, String> {
         mcp: false,
         select: None,
         log: None,
+        time: 0.0,
     };
     let mut words = std::env::args().skip(1);
     while let Some(word) = words.next() {
@@ -417,10 +534,11 @@ fn arguments() -> Result<Arguments, String> {
             "--mcp" => parsed.mcp = true,
             "--select" => parsed.select = Some(value("--select")?),
             "--log" => parsed.log = Some(value("--log")?),
+            "--time" => parsed.time = time(&value("--time")?)?,
             other => {
                 return Err(format!(
-                    "no option {other}, valid: --sources, --ops, --png, --width, --height, --mcp, \
-                     --select, --log"
+                    "no option {other}, valid: --sources, --ops, --png, --width, --height, --time, \
+                     --mcp, --select, --log"
                 ));
             }
         }
@@ -441,6 +559,14 @@ fn size(name: &str, text: &str) -> Result<u32, String> {
         ));
     }
     Ok(value)
+}
+
+/// The virtual time of `--time` from `text`, a finite number of seconds of 0 or more.
+fn time(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(value) if value.is_finite() && value >= 0.0 => Ok(value),
+        _ => Err(format!("--time: {text}, valid: a number of 0 or more")),
+    }
 }
 
 /// Applies the operations of the file `path` to `viewer`, and writes the lines for the standard
@@ -509,6 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &look,
             arguments.width as f32 / arguments.height.max(1) as f32,
         );
+        viewer.time = arguments.time;
         let details = viewer.details();
         let view = View {
             world: &viewer.world,
@@ -517,6 +644,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             camera: &camera,
             details: &details,
             scale: 1.0,
+            time: viewer.time,
         };
         let image = renderer.render(&view, arguments.width, arguments.height)?;
         image.write_png(std::io::BufWriter::new(std::fs::File::create(path)?))?;

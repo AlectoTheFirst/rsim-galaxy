@@ -58,6 +58,16 @@ choice! {
     Scheme { Light = "light", Dark = "dark" }
 }
 
+choice! {
+    /// The width of a flow line from its magnitude, or from the count of the flows of its trunk.
+    Widths { Magnitude = "magnitude", Uniform = "uniform" }
+}
+
+choice! {
+    /// Scale from the magnitude of a flow to the width of its line.
+    Scale { Log = "log", Linear = "linear" }
+}
+
 /// The look of a world.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Look {
@@ -66,6 +76,8 @@ pub struct Look {
     pub light: Light,
     pub lines: Lines,
     pub scheme: Scheme,
+    pub widths: Widths,
+    pub scale: Scale,
 }
 
 /// The style of a world: the rule set, the look, and the defined shapes and the materials.

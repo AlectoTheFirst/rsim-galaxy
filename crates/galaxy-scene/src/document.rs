@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::id::ObjectId;
 use crate::json::{self, Json};
 use crate::sha256;
-use crate::world::{Node, Outcome, OutcomeKind, RelationRefusal, Relations};
+use crate::world::{Flow, Magnitude, Node, Outcome, OutcomeKind, RelationRefusal, Relations, Unit};
 
 /// The versions that the reader reads.
 pub const VERSIONS: &[&str] = &["0.1"];
@@ -39,10 +39,6 @@ const KIND_VALID: &str = "1 to 64 ASCII letters, digits, -, _ and ., not root, n
 const TIME_VALID: &str = "RFC 3339 time in UTC with Z";
 /// The largest integer that a number holds.
 const INTEGER: f64 = 9_007_199_254_740_991.0;
-/// The units of a magnitude.
-const UNITS: &[&str] = &["bit/s", "packet/s", "byte", "packet", "flow"];
-/// The count units of a magnitude.
-const COUNT_UNITS: &[&str] = &["byte", "packet", "flow"];
 /// The byte order mark of UTF-8.
 const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 /// The values of `missing` of a field.
@@ -73,10 +69,6 @@ pub const NOT_SHOWN: &[&str] = &[
     "node.handle",
     "link",
     "flow.fields.missing",
-    "flow.hops",
-    "flow.magnitude",
-    "flow.group",
-    "flow.reply_to",
     "flow.handle",
 ];
 
@@ -469,7 +461,7 @@ struct Reader<'a> {
     unit: Option<String>,
     partial: Vec<[String; 2]>,
     ignored: BTreeSet<String>,
-    not_shown: [bool; 10],
+    not_shown: [bool; NOT_SHOWN.len()],
     /// The records of each class of `CLASSES`.
     records: [usize; 3],
 }
@@ -525,6 +517,7 @@ impl Reader<'_> {
         if !self.refusals.is_empty() {
             return Err(self.refusals);
         }
+        self.relations.set_window(self.source.window.clone());
         let answer = Answer {
             source: self.source,
             nodes: self.records[0],
@@ -1243,33 +1236,34 @@ impl Reader<'_> {
         );
         let id = self.id(at, value);
         let path = value.get("path").and_then(|path| self.path(at, path));
-        if let Some(hops) = value.get("hops") {
-            self.not_shown("flow.hops");
-            self.hops(at, hops, value.get("path").and_then(Json::as_array));
-        }
+        let hops = match value.get("hops") {
+            Some(hops) => self.hops(at, hops, value.get("path").and_then(Json::as_array)),
+            None => Vec::new(),
+        };
         let outcome = value
             .get("outcome")
             .and_then(|outcome| self.outcome(at, outcome));
-        if let Some(magnitude) = value.get("magnitude") {
-            self.not_shown("flow.magnitude");
-            self.magnitude(at, magnitude);
-        }
-        if let Some(group) = value.get("group") {
-            self.not_shown("flow.group");
-            self.name(at, "group", group);
-        }
+        let magnitude = value
+            .get("magnitude")
+            .and_then(|magnitude| self.magnitude(at, magnitude));
+        let group = value
+            .get("group")
+            .and_then(|group| self.name(at, "group", group))
+            .map(str::to_owned);
         let reply = value.get("reply_to").is_some();
-        if let Some(reply_to) = value.get("reply_to") {
-            self.not_shown("flow.reply_to");
-            if let Some(name) = self.name(at, "reply_to", reply_to)
-                && self.ids.get(name) != Some(&Class::Flow(false))
-            {
+        let mut reply_to = None;
+        if let Some(value) = value.get("reply_to")
+            && let Some(name) = self.name(at, "reply_to", value)
+        {
+            if self.ids.get(name) == Some(&Class::Flow(false)) {
+                reply_to = ObjectId::new(name);
+            } else {
                 self.refuse(
                     at,
                     "reply_to",
                     Code::NoFlow,
                     "the id of a flow before the record with no reply_to".to_owned(),
-                    Some(reply_to),
+                    Some(value),
                 );
             }
         }
@@ -1290,7 +1284,16 @@ impl Reader<'_> {
         if let (Some(id), Some(path), true) = (id, path, self.refusals.is_empty())
             && let Some(id) = ObjectId::new(&id)
         {
-            let added = self.relations.add_flow_with_data(id, path, outcome, fields);
+            let flow = Flow {
+                outcome,
+                magnitude,
+                group,
+                reply_to,
+                hops,
+                fields,
+                ..Flow::new(id, path)
+            };
+            let added = self.relations.insert_flow(flow, false);
             self.relation(at, added);
         }
     }
@@ -1310,6 +1313,18 @@ impl Reader<'_> {
             }
             RelationRefusal::ShortPath { .. } => ("path", Code::ShortPath, "2 or more"),
             RelationRefusal::Repeat { .. } => ("path", Code::Repeat, "another node"),
+            RelationRefusal::Hops { .. } => ("hops", Code::Size, "1 item for each node of path"),
+            RelationRefusal::NoFlow { .. } => (
+                "reply_to",
+                Code::NoFlow,
+                "the id of a flow before the record with no reply_to",
+            ),
+            RelationRefusal::Unit { valid, .. } => ("magnitude.unit", Code::Unit, valid.name()),
+            RelationRefusal::Window { .. } => (
+                "source.window",
+                Code::Window,
+                "from and to, from not after to",
+            ),
         };
         self.refuse(at, member, code, valid.to_owned(), None);
     }
@@ -1363,10 +1378,17 @@ impl Reader<'_> {
         complete.then_some(path)
     }
 
-    fn hops(&mut self, at: &str, value: &Json, path: Option<&[Json]>) {
+    /// The fields of each hop, or no item.
+    fn hops(
+        &mut self,
+        at: &str,
+        value: &Json,
+        path: Option<&[Json]>,
+    ) -> Vec<Vec<(String, String)>> {
+        let mut hops = Vec::new();
         let Some(items) = value.as_array() else {
             self.refuse(at, "hops", Code::Type, "array".to_owned(), Some(value));
-            return;
+            return hops;
         };
         if let Some(path) = path
             && items.len() != path.len()
@@ -1385,10 +1407,16 @@ impl Reader<'_> {
                 continue;
             }
             self.members(at, &place, "flow.hops", item, &["fields"], &[]);
-            if let Some(fields) = item.get("fields") {
-                self.fields(at, &format!("{place}.fields"), "flow.hops.fields", fields);
-            }
+            let fields = match item.get("fields") {
+                Some(fields) => {
+                    self.fields(at, &format!("{place}.fields"), "flow.hops.fields", fields)
+                        .0
+                }
+                None => Vec::new(),
+            };
+            hops.push(fields);
         }
+        hops
     }
 
     fn outcome(&mut self, at: &str, value: &Json) -> Option<Outcome> {
@@ -1427,9 +1455,9 @@ impl Reader<'_> {
         })
     }
 
-    fn magnitude(&mut self, at: &str, value: &Json) {
+    fn magnitude(&mut self, at: &str, value: &Json) -> Option<Magnitude> {
         if !self.object(at, "magnitude", value) {
-            return;
+            return None;
         }
         self.members(
             at,
@@ -1439,46 +1467,50 @@ impl Reader<'_> {
             &["value", "unit"],
             &["value", "unit"],
         );
+        let mut amount = None;
         if let Some(number) = value.get("value")
-            && let Some(amount) = self.number(at, "magnitude.value", number)
-            && amount < 0.0
+            && let Some(read) = self.number(at, "magnitude.value", number)
         {
-            self.refuse(
-                at,
-                "magnitude.value",
-                Code::Value,
-                "0 or more".to_owned(),
-                Some(number),
-            );
+            if read < 0.0 {
+                self.refuse(
+                    at,
+                    "magnitude.value",
+                    Code::Value,
+                    "0 or more".to_owned(),
+                    Some(number),
+                );
+            } else {
+                amount = Some(read);
+            }
         }
-        let Some(unit) = value.get("unit") else {
-            return;
-        };
-        let Some(text) = self.string(at, "magnitude.unit", unit) else {
-            return;
-        };
-        if !UNITS.contains(&text) {
+        let unit = value.get("unit")?;
+        let text = self.string(at, "magnitude.unit", unit)?;
+        let Some(parsed) = Unit::parse(text) else {
             self.refuse(
                 at,
                 "magnitude.unit",
                 Code::Value,
-                UNITS.join(", "),
+                Unit::NAMES.join(", "),
                 Some(unit),
             );
-            return;
-        }
+            return None;
+        };
         match &self.unit {
             None => self.unit = Some(text.to_owned()),
             Some(first) if first != text => {
                 let first = first.clone();
                 self.refuse(at, "magnitude.unit", Code::Unit, first, Some(unit));
-                return;
+                return None;
             }
             Some(_) => {}
         }
-        if COUNT_UNITS.contains(&text) {
+        if parsed.is_count() {
             self.no_window();
         }
+        Some(Magnitude {
+            value: amount?,
+            unit: parsed,
+        })
     }
 
     /// Refuses a count unit with no window. `finish` puts the refusal at the place of `source`
@@ -1500,12 +1532,12 @@ impl Reader<'_> {
             .get("magnitude")
             .and_then(|magnitude| magnitude.get("unit"))
             .and_then(Json::as_str)
-            .filter(|text| UNITS.contains(text))
+            .filter(|text| Unit::parse(text).is_some())
         else {
             return false;
         };
         self.unit = Some(text.to_owned());
-        if COUNT_UNITS.contains(&text) {
+        if Unit::parse(text).is_some_and(Unit::is_count) {
             self.no_window();
         }
         true

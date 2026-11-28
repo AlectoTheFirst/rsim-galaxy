@@ -120,8 +120,20 @@ pub struct Material {
 
 impl Material {
     /// The names of the built-in materials, in the order of their index in `Library::materials`.
-    pub const BUILT_IN: &'static [&'static str] =
-        &["body", "symbol", "brick", "flame", "mortar", "flame-core"];
+    pub const BUILT_IN: &'static [&'static str] = &[
+        "body",
+        "symbol",
+        "brick",
+        "flame",
+        "mortar",
+        "flame-core",
+        "flow-1",
+        "flow-2",
+        "flow-drop",
+        "flow-loop",
+        "flow-unknown",
+        "flow-reply",
+    ];
 }
 
 /// The defined shapes and the materials. A rule names a defined shape by its index in

@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use galaxy_render::label::{Cause, Labels};
 use galaxy_render::{Camera, Image, Renderer, Selection, View};
 use galaxy_scene::{
-    Arrangement, Axis, Colours, DefinedShape, Library, Lines, Look, Node, ObjectId, Outcome,
-    OutcomeKind, Part, Projection, Relations, Rule, RuleSet, Scheme, Shape, Solid, Space, World,
+    Arrangement, Axis, Colours, DefinedShape, Flow, Library, Lines, Look, Magnitude, Node,
+    ObjectId, Outcome, OutcomeKind, Part, Projection, Relations, Rule, RuleSet, Scheme, Shape,
+    Solid, Space, Unit, World,
 };
 
 const WIDTH: u32 = 320;
@@ -72,6 +73,7 @@ fn render(renderer: &Renderer, look: &Look, selection: Option<&Selection>) -> Im
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -187,6 +189,7 @@ fn pick_at_the_pixel_of_a_node_gives_the_node_or_an_ancestor_in_each_projection(
             camera: &camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         for name in ["client", "dns"] {
             let [x, y] = pixel_of(&world, &look, name);
@@ -235,6 +238,7 @@ fn far_camera_draws_the_site_as_1_closed_box_with_no_flow() {
         camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let near_count = renderer.count(&view(&home), WIDTH, HEIGHT);
     let far_count = renderer.count(&view(&far), WIDTH, HEIGHT);
@@ -262,6 +266,7 @@ fn panel_of_the_selection_shows_its_lines_in_the_text_colour() {
             camera: &camera,
             details,
             scale: 1.0,
+            time: 0.0,
         };
         renderer.render(&view, WIDTH, HEIGHT).unwrap()
     };
@@ -309,6 +314,7 @@ fn node_of_a_cylinder_kind_leaves_the_corners_of_its_box_empty() {
             camera: &camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         count(&renderer.render(&view, WIDTH, HEIGHT).unwrap(), surface)
     };
@@ -345,6 +351,7 @@ fn node_frame(
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -449,6 +456,7 @@ fn pick_at_the_centre_of_a_node_of_a_defined_shape_gives_the_node() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     assert_eq!(
         renderer
@@ -557,6 +565,7 @@ fn cap_of_a_cylinder_has_the_light_of_the_top_of_a_box_at_its_centre() {
             camera: &camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         let [x, y] = camera
             .project(&look, [0.0, 0.4, 0.0], WIDTH, HEIGHT)
@@ -577,6 +586,28 @@ fn cap_of_a_cylinder_has_the_light_of_the_top_of_a_box_at_its_centre() {
 
 /// 2 endpoints in a row with 1 flow from the first to the second for each of `outcomes`.
 fn pair(outcomes: &[Option<OutcomeKind>]) -> World {
+    pair_of(
+        outcomes
+            .iter()
+            .enumerate()
+            .map(|(number, kind)| Flow {
+                outcome: kind.map(|kind| Outcome { kind, reason: None }),
+                ..between(number)
+            })
+            .collect(),
+    )
+}
+
+/// The flow `flow-<number>` from client to server.
+fn between(number: usize) -> Flow {
+    Flow::new(
+        id(&format!("flow-{number}")),
+        vec![id("client"), id("server")],
+    )
+}
+
+/// 2 endpoints client and server in a row with `flows`.
+fn pair_of(flows: Vec<Flow>) -> World {
     let rule = |size| Rule {
         arrangement: Arrangement::Row,
         shape: Shape::Box,
@@ -594,16 +625,8 @@ fn pair(outcomes: &[Option<OutcomeKind>]) -> World {
     for name in ["client", "server"] {
         relations.add(id(name), "endpoint", None).unwrap();
     }
-    for (number, kind) in outcomes.iter().enumerate() {
-        let outcome = kind.map(|kind| Outcome { kind, reason: None });
-        relations
-            .add_flow_with_data(
-                id(&format!("flow-{number}")),
-                vec![id("client"), id("server")],
-                outcome,
-                Vec::new(),
-            )
-            .unwrap();
+    for flow in flows {
+        relations.add_flow_with_data(flow).unwrap();
     }
     World::expand(&relations, &rules)
 }
@@ -617,6 +640,7 @@ fn frame(renderer: &Renderer, world: &World, look: &Look) -> Image {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -660,6 +684,7 @@ fn selected_flow_keeps_the_colour_of_its_outcome_inside_a_halo() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let plain = frame(&renderer, &world, &look);
@@ -678,14 +703,14 @@ fn line_has_the_colour_of_its_outcome_in_each_scheme() {
             [0x00, 0x6C, 0x78],
             [0xC8, 0x26, 0x1E],
             [0xC2, 0x7C, 0x0E],
-            [0x7A, 0x84, 0x91],
+            [0x1A, 0x8F, 0xD8],
         ),
         (
             Scheme::Dark,
             [0x5F, 0xD0, 0xD8],
             [0xFF, 0x5C, 0x50],
             [0xF5, 0xB0, 0x3C],
-            [0x9A, 0xA4, 0xB2],
+            [0x5C, 0xC4, 0xFF],
         ),
     ] {
         let look = Look {
@@ -735,6 +760,7 @@ fn line_of_a_dropped_flow_ends_in_a_stop_mark_clear_of_its_last_node() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let [x, y] = camera.project(&look, top, WIDTH, HEIGHT).unwrap();
@@ -823,6 +849,7 @@ fn flow_line_past_the_camera_keeps_its_width_near_the_camera() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let line = count(&image, [0x00, 0x6C, 0x78]);
@@ -883,6 +910,7 @@ fn node_from(renderer: &Renderer, shape: Shape, size: [f64; 3], direction: [f32;
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     renderer.render(&view, 1600, 1000).unwrap()
 }
@@ -957,6 +985,7 @@ fn seen(renderer: &Renderer, world: &World, eye: [f64; 3], target: [f64; 3]) -> 
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     renderer.render(&view, WIDTH, HEIGHT).unwrap()
 }
@@ -1102,6 +1131,7 @@ fn open_node_of_the_cloud_shape_is_the_outline_of_its_cloud_with_no_floor_plate(
             camera: &camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         renderer.count(&view, WIDTH, HEIGHT)
     });
@@ -1314,6 +1344,7 @@ fn labels_of(
         camera,
         details: &[],
         scale,
+        time: 0.0,
     };
     renderer.labels(&view, WIDTH, HEIGHT)
 }
@@ -1359,6 +1390,7 @@ fn label_shows_on_a_leaf_of_48_pixels_and_not_on_a_leaf_of_40_pixels() {
             camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         renderer.render(&view, WIDTH, HEIGHT).unwrap()
     };
@@ -1425,6 +1457,7 @@ fn two_renders_of_1_view_give_the_same_pixels_and_the_same_labels() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let first = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let labels = renderer.labels(&view, WIDTH, HEIGHT);
@@ -1548,6 +1581,7 @@ fn stems_of_a_label_and_of_the_panel_text_reach_within_20_of_the_text_colour() {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
     let label = faintest_stem(
@@ -1563,6 +1597,7 @@ fn stems_of_a_label_and_of_the_panel_text_reach_within_20_of_the_text_colour() {
             camera: &camera,
             details,
             scale: 1.0,
+            time: 0.0,
         };
         renderer.render(&view, WIDTH, HEIGHT).unwrap()
     };
@@ -1584,4 +1619,239 @@ fn stems_of_a_label_and_of_the_panel_text_reach_within_20_of_the_text_colour() {
     assert!(near_text_colour(label), "{label:?}");
     assert!(near_text_colour(title), "{title:?}");
     assert!(near_text_colour(value), "{value:?}");
+}
+
+/// The colours of the flow materials flow-1, flow-2, flow-drop, flow-unknown and flow-reply in
+/// the light scheme.
+const FLOW_1: [u8; 3] = [0x00, 0x6C, 0x78];
+const FLOW_2: [u8; 3] = [0x1F, 0x8A, 0x5C];
+const FLOW_DROP: [u8; 3] = [0xC8, 0x26, 0x1E];
+const FLOW_UNKNOWN: [u8; 3] = [0x1A, 0x8F, 0xD8];
+const FLOW_REPLY: [u8; 3] = [0x7B, 0x4F, 0xC9];
+/// The ground colour in the light scheme.
+const GROUND: [u8; 3] = [0xF4, 0xF5, 0xF8];
+
+/// The flow `flow-<number>` from client to server that answers flow-0.
+fn reply(number: usize) -> Flow {
+    Flow {
+        reply_to: Some(id("flow-0")),
+        ..between(number)
+    }
+}
+
+/// The frame of `world` in `look` from the home camera at the virtual time `time`.
+fn frame_at(renderer: &Renderer, world: &World, look: &Look, time: f64) -> Image {
+    let camera = Camera::home(world, look, ASPECT);
+    let view = View {
+        world,
+        look,
+        selection: None,
+        camera: &camera,
+        details: &[],
+        scale: 1.0,
+        time,
+    };
+    renderer.render(&view, WIDTH, HEIGHT).unwrap()
+}
+
+#[test]
+fn reply_line_has_ground_pixels_at_a_period_of_14_pixels_along_a_straight_run() {
+    let Some(renderer) = renderer() else { return };
+    let look = Look {
+        projection: Projection::Isometric,
+        ..flat()
+    };
+    let world = pair_of(vec![between(0), reply(1)]);
+    let line = &world.flows()[1].points;
+    let (from, to) = line
+        .windows(2)
+        .filter(|pair| (pair[1][0] - pair[0][0]).abs() > 1e-9)
+        .map(|pair| (pair[0], pair[1]))
+        .max_by(|first, second| {
+            (first.1[0] - first.0[0])
+                .abs()
+                .total_cmp(&(second.1[0] - second.0[0]).abs())
+        })
+        .unwrap();
+    let middle = [0, 1, 2].map(|axis| (from[axis] + to[axis]) / 2.0);
+    let camera = Camera {
+        eye: [
+            middle[0] as f32,
+            middle[1] as f32 + 10.0,
+            middle[2] as f32 + 1.0,
+        ],
+        target: middle.map(|value| value as f32),
+        fov_y_degrees: 20.0,
+    };
+    let view = View {
+        world: &world,
+        look: &look,
+        selection: None,
+        camera: &camera,
+        details: &[],
+        scale: 1.0,
+        time: 0.0,
+    };
+    let image = renderer.render(&view, WIDTH, HEIGHT).unwrap();
+    let [start, end] = [from, to].map(|point| camera.project(&look, point, WIDTH, HEIGHT).unwrap());
+    let row = middle_row(&camera, &look, middle);
+    let (left, right) = (
+        start[0].min(end[0]) as u32 + 4,
+        start[0].max(end[0]) as u32 - 4,
+    );
+    let colours: Vec<[u8; 3]> = (left..right)
+        .map(|column| {
+            let [r, g, b, _] = image.pixel(column, row);
+            [r, g, b]
+        })
+        .collect();
+    let starts: Vec<usize> = (1..colours.len())
+        .filter(|&place| colours[place] == FLOW_REPLY && colours[place - 1] != FLOW_REPLY)
+        .collect();
+    let periods = starts
+        .windows(2)
+        .filter(|pair| (13..=15).contains(&(pair[1] - pair[0])))
+        .count();
+    assert!(periods >= 3, "{starts:?}");
+    assert!(colours.contains(&GROUND), "{colours:?}");
+}
+
+/// The row of the pixel of `point`.
+fn middle_row(camera: &Camera, look: &Look, point: [f64; 3]) -> u32 {
+    camera.project(look, point, WIDTH, HEIGHT).unwrap()[1].round() as u32
+}
+
+#[test]
+fn two_frames_at_the_same_time_are_equal() {
+    let Some(renderer) = renderer() else { return };
+    let look = Look::default();
+    let world = pair_of(vec![between(0), reply(1)]);
+    assert_eq!(
+        frame_at(&renderer, &world, &look, 2.5),
+        frame_at(&renderer, &world, &look, 2.5)
+    );
+}
+
+#[test]
+fn two_frames_1_second_apart_differ_only_near_the_packets() {
+    let Some(renderer) = renderer() else { return };
+    let look = flat();
+    let world = pair(&[Some(OutcomeKind::Deliver)]);
+    let camera = Camera::home(&world, &look, ASPECT);
+    let [first, second] = [0.0, 1.0].map(|time| frame_at(&renderer, &world, &look, time));
+    let line: Vec<[f32; 2]> = world.flows()[0]
+        .points
+        .iter()
+        .map(|point| camera.project(&look, *point, WIDTH, HEIGHT).unwrap())
+        .collect();
+    let near = |[x, y]: [f32; 2]| {
+        line.windows(2).any(|pair| {
+            let [a, b] = [pair[0], pair[1]];
+            let along = [b[0] - a[0], b[1] - a[1]];
+            let length = along[0] * along[0] + along[1] * along[1];
+            let part = if length > 0.0 {
+                (((x - a[0]) * along[0] + (y - a[1]) * along[1]) / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let foot = [a[0] + along[0] * part, a[1] + along[1] * part];
+            (x - foot[0]).hypot(y - foot[1]) <= 12.0
+        })
+    };
+    let mut differ = 0;
+    for row in 0..HEIGHT {
+        for column in 0..WIDTH {
+            if first.pixel(column, row) != second.pixel(column, row) {
+                differ += 1;
+                assert!(
+                    near([column as f32 + 0.5, row as f32 + 0.5]),
+                    "{column} {row}"
+                );
+            }
+        }
+    }
+    assert!(differ > 0);
+}
+
+#[test]
+fn line_of_vmax_is_wider_than_a_line_of_0_in_pixels() {
+    let Some(renderer) = renderer() else { return };
+    let look = flat();
+    let magnitude = |value| {
+        Some(Magnitude {
+            value,
+            unit: Unit::BitPerSecond,
+        })
+    };
+    let world = pair_of(vec![
+        Flow {
+            magnitude: magnitude(100.0),
+            ..between(0)
+        },
+        Flow {
+            magnitude: magnitude(0.0),
+            ..between(1)
+        },
+    ]);
+    let image = frame(&renderer, &world, &look);
+    let (wide, thin) = (count(&image, FLOW_1), count(&image, FLOW_2));
+    assert!(thin > 0 && wide * 2 > thin * 3, "{wide} {thin}");
+}
+
+#[test]
+fn line_of_unknown_has_the_flow_unknown_colour_and_a_reply_the_flow_reply_colour() {
+    let Some(renderer) = renderer() else { return };
+    let look = Look::default();
+    let unknown = frame(&renderer, &pair(&[Some(OutcomeKind::Unknown)]), &look);
+    assert!(count(&unknown, FLOW_UNKNOWN) > 100);
+    let delivered = Some(Outcome {
+        kind: OutcomeKind::Deliver,
+        reason: None,
+    });
+    let world = pair_of(vec![
+        Flow {
+            outcome: delivered.clone(),
+            ..between(0)
+        },
+        Flow {
+            outcome: delivered,
+            ..reply(1)
+        },
+    ]);
+    let image = frame(&renderer, &world, &look);
+    assert!(
+        count(&image, FLOW_REPLY) > 100,
+        "{}",
+        count(&image, FLOW_REPLY)
+    );
+    assert!(count(&image, FLOW_1) > 100);
+    assert_eq!(count(&image, FLOW_2), 0);
+    let dropped = pair_of(vec![
+        between(0),
+        Flow {
+            outcome: Some(Outcome {
+                kind: OutcomeKind::Drop,
+                reason: None,
+            }),
+            ..reply(1)
+        },
+    ]);
+    let image = frame(&renderer, &dropped, &look);
+    assert!(count(&image, FLOW_DROP) > 100);
+    assert_eq!(count(&image, FLOW_REPLY), 0);
+}
+
+#[test]
+fn set_material_of_flow_drop_changes_the_colour_of_a_dropped_line() {
+    let Some(renderer) = renderer() else { return };
+    let look = Look::default();
+    let accent = [0x8A, 0x2B, 0xE2];
+    let world = pair(&[Some(OutcomeKind::Drop)]).with_library(coloured(
+        Library::default(),
+        "flow-drop",
+        accent,
+    ));
+    let image = frame(&renderer, &world, &look);
+    assert!(count(&image, accent) > 100, "{}", count(&image, accent));
+    assert_eq!(count(&image, FLOW_DROP), 0);
 }

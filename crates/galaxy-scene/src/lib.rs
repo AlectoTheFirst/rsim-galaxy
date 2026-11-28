@@ -25,8 +25,8 @@ pub use model::{Change, ChangeRefusal, Model, RuleTarget};
 pub use primitive::{Kind, Primitive, ReferenceField};
 pub use scene::{Binding, Object, Operation, Refusal, Scene};
 pub use session::Session;
-pub use style::{Light, Lines, Look, Projection, Scheme, Space, Style};
+pub use style::{Light, Lines, Look, Projection, Scale, Scheme, Space, Style, Widths};
 pub use world::{
-    Arrangement, Broken, Flow, FlowLine, Laned, Node, Outcome, OutcomeKind, Placed,
-    RelationRefusal, Relations, Rule, RuleSet, Shape, Vec3, World,
+    Arrangement, Broken, Flow, FlowLine, Laned, Magnitude, Node, Outcome, OutcomeKind, Placed,
+    RelationRefusal, Relations, Rule, RuleSet, Shape, Unit, Vec3, World,
 };

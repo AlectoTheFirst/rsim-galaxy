@@ -5,8 +5,8 @@ use crate::json::Json;
 use crate::library::{Axis, Colours, Part, Solid, hex, parse_hex};
 use crate::model::{Change, NAME_RULE, RuleTarget};
 use crate::sha256;
-use crate::style::{Light, Lines, Look, Projection, Scheme, Space};
-use crate::world::{Arrangement, Node, Outcome, OutcomeKind};
+use crate::style::{Light, Lines, Look, Projection, Scale, Scheme, Space, Widths};
+use crate::world::{Arrangement, Magnitude, Node, Outcome, OutcomeKind, Unit};
 
 /// An operation of the wire form: its name, its description and the JSON schema of its
 /// arguments.
@@ -27,7 +27,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "add_flow",
         description: "Add a flow",
-        schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Flow name","pattern":"^[A-Za-z0-9._-]{1,64}$"},"path":{"type":"array","description":"Path","items":{"type":"string"},"minItems":2},"outcome":{"type":"object","description":"Outcome","properties":{"kind":{"type":"string","enum":["deliver","exit","drop","loop","unknown"]},"reason":{"type":"string","description":"Reason"}},"required":["kind"]},"fields":{"type":"object","description":"Source data","maxProperties":64,"propertyNames":{"pattern":"^[A-Za-z0-9._-]{1,64}$"},"additionalProperties":{"type":["string","number","boolean"],"minLength":1,"maxLength":1024}}},"required":["name","path"]}"#,
+        schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Flow name","pattern":"^[A-Za-z0-9._-]{1,64}$"},"path":{"type":"array","description":"Path","items":{"type":"string"},"minItems":2},"outcome":{"type":"object","description":"Outcome","properties":{"kind":{"type":"string","enum":["deliver","exit","drop","loop","unknown"]},"reason":{"type":"string","description":"Reason"}},"required":["kind"]},"magnitude":{"type":"object","description":"Magnitude","properties":{"value":{"type":"number","minimum":0},"unit":{"type":"string","enum":["bit/s","packet/s","byte","packet","flow"]}},"required":["value","unit"]},"group":{"type":"string","description":"Group","pattern":"^[A-Za-z0-9._-]{1,64}$"},"reply_to":{"type":"string","description":"Request flow","pattern":"^[A-Za-z0-9._-]{1,64}$"},"hops":{"type":"array","description":"Hops","items":{"type":"object","properties":{"fields":{"type":"object","description":"Source data","maxProperties":64,"propertyNames":{"pattern":"^[A-Za-z0-9._-]{1,64}$"},"additionalProperties":{"type":["string","number","boolean"],"minLength":1,"maxLength":1024}}}}},"fields":{"type":"object","description":"Source data","maxProperties":64,"propertyNames":{"pattern":"^[A-Za-z0-9._-]{1,64}$"},"additionalProperties":{"type":["string","number","boolean"],"minLength":1,"maxLength":1024}}},"required":["name","path"]}"#,
     },
     Tool {
         name: "set_rule",
@@ -37,7 +37,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "set_look",
         description: "Set the look",
-        schema: r#"{"type":"object","properties":{"projection":{"type":"string","enum":["perspective","isometric"]},"space":{"type":"string","enum":["ground","floating"]},"light":{"type":"string","enum":["sun","flat"]},"lines":{"type":"string","enum":["crisp","glow"]},"scheme":{"type":"string","enum":["light","dark"]}}}"#,
+        schema: r#"{"type":"object","properties":{"projection":{"type":"string","enum":["perspective","isometric"]},"space":{"type":"string","enum":["ground","floating"]},"light":{"type":"string","enum":["sun","flat"]},"lines":{"type":"string","enum":["crisp","glow"]},"scheme":{"type":"string","enum":["light","dark"]},"widths":{"type":"string","enum":["magnitude","uniform"]},"scale":{"type":"string","enum":["log","linear"]}}}"#,
     },
     Tool {
         name: "define_shape",
@@ -86,6 +86,13 @@ pub enum WireRefusal {
         index: usize,
         refusal: Box<WireRefusal>,
     },
+    /// The fields of the hop `index` of a flow are refused.
+    Hop {
+        index: usize,
+        refusal: Box<WireRefusal>,
+    },
+    /// The hops of a flow are not 1 item for each node of its path.
+    Hops { count: usize, nodes: usize },
 }
 
 impl fmt::Display for WireRefusal {
@@ -113,6 +120,10 @@ impl fmt::Display for WireRefusal {
                 FIELD_TEXT[0], FIELD_TEXT[1]
             ),
             WireRefusal::Part { index, refusal } => write!(f, "parts.{index}.{refusal}"),
+            WireRefusal::Hop { index, refusal } => write!(f, "hops.{index}.{refusal}"),
+            WireRefusal::Hops { count, nodes } => {
+                write!(f, "hops: {count} items, valid: {nodes} items")
+            }
         }
     }
 }
@@ -175,10 +186,26 @@ pub fn decode(name: &str, arguments: &Json) -> Result<Change, WireRefusal> {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let id = object_id(arguments, "name")?;
+            let outcome = outcome(arguments)?;
+            let magnitude = magnitude(arguments)?;
+            let group = match arguments.get("group") {
+                None => None,
+                Some(_) => Some(named(arguments, "group")?),
+            };
+            let reply_to = match arguments.get("reply_to") {
+                None => None,
+                Some(_) => Some(object_id(arguments, "reply_to")?),
+            };
+            let hops = hops(arguments, path.len())?;
             Ok(Change::AddFlow {
-                id: object_id(arguments, "name")?,
+                id,
                 path,
-                outcome: outcome(arguments)?,
+                outcome,
+                magnitude,
+                group,
+                reply_to,
+                hops,
                 fields: fields(arguments)?,
             })
         }
@@ -257,6 +284,8 @@ pub fn decode(name: &str, arguments: &Json) -> Result<Change, WireRefusal> {
                 light: choice(arguments, "light", Light::parse, Light::NAMES)?,
                 lines: choice(arguments, "lines", Lines::parse, Lines::NAMES)?,
                 scheme: choice(arguments, "scheme", Scheme::parse, Scheme::NAMES)?,
+                widths: choice(arguments, "widths", Widths::parse, Widths::NAMES)?,
+                scale: choice(arguments, "scale", Scale::parse, Scale::NAMES)?,
             },
         }),
         "define_shape" => {
@@ -380,6 +409,10 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
             id,
             path,
             outcome,
+            magnitude,
+            group,
+            reply_to,
+            hops,
             fields,
         } => {
             let mut members = vec![
@@ -395,6 +428,34 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
                     parts.push(("reason".to_owned(), Json::string(reason.as_str())));
                 }
                 members.push(("outcome".to_owned(), Json::Object(parts)));
+            }
+            if let Some(magnitude) = magnitude {
+                members.push((
+                    "magnitude".to_owned(),
+                    Json::object([
+                        ("value", Json::Number(magnitude.value)),
+                        ("unit", Json::string(magnitude.unit.name())),
+                    ]),
+                ));
+            }
+            if let Some(group) = group {
+                members.push(("group".to_owned(), Json::string(group.as_str())));
+            }
+            if let Some(request) = reply_to {
+                members.push(("reply_to".to_owned(), Json::string(request.as_str())));
+            }
+            if !hops.is_empty() {
+                let items = hops
+                    .iter()
+                    .map(|hop| {
+                        let mut members = Vec::new();
+                        if !hop.is_empty() {
+                            members.push(("fields".to_owned(), fields_json(hop)));
+                        }
+                        Json::Object(members)
+                    })
+                    .collect();
+                members.push(("hops".to_owned(), Json::Array(items)));
             }
             if !fields.is_empty() {
                 members.push(("fields".to_owned(), fields_json(fields)));
@@ -449,6 +510,8 @@ pub fn encode(change: &Change) -> (&'static str, Json) {
                 ("light", Json::string(look.light.name())),
                 ("lines", Json::string(look.lines.name())),
                 ("scheme", Json::string(look.scheme.name())),
+                ("widths", Json::string(look.widths.name())),
+                ("scale", Json::string(look.scale.name())),
             ]),
         ),
         Change::DefineShape {
@@ -781,6 +844,84 @@ fn fields_json(fields: &[(String, String)]) -> Json {
     )
 }
 
+/// The argument `magnitude`: an object with a value of 0 or more and a unit.
+fn magnitude(arguments: &Json) -> Result<Option<Magnitude>, WireRefusal> {
+    let Some(value) = arguments.get("magnitude") else {
+        return Ok(None);
+    };
+    if value.as_object().is_none() {
+        return Err(WireRefusal::Type {
+            field: "magnitude",
+            expected: "object",
+        });
+    }
+    let amount = value.get("value").ok_or(WireRefusal::Missing {
+        field: "magnitude.value",
+    })?;
+    let number = amount.as_f64().ok_or(WireRefusal::Type {
+        field: "magnitude.value",
+        expected: "number",
+    })?;
+    if !(number.is_finite() && number >= 0.0) {
+        return Err(WireRefusal::Value {
+            field: "magnitude.value",
+            value: amount.to_string(),
+            valid: "0 or more".to_owned(),
+        });
+    }
+    let unit = value
+        .get("unit")
+        .ok_or(WireRefusal::Missing {
+            field: "magnitude.unit",
+        })?
+        .as_str()
+        .ok_or(WireRefusal::Type {
+            field: "magnitude.unit",
+            expected: "string",
+        })?;
+    let unit = Unit::parse(unit).ok_or_else(|| WireRefusal::Value {
+        field: "magnitude.unit",
+        value: unit.to_owned(),
+        valid: Unit::NAMES.join(", "),
+    })?;
+    Ok(Some(Magnitude {
+        value: number,
+        unit,
+    }))
+}
+
+/// The argument `hops`: 1 object for each of the `nodes` nodes of the path, each with optional
+/// `fields`.
+fn hops(arguments: &Json, nodes: usize) -> Result<Vec<Vec<(String, String)>>, WireRefusal> {
+    let Some(value) = arguments.get("hops") else {
+        return Ok(Vec::new());
+    };
+    let expected = WireRefusal::Type {
+        field: "hops",
+        expected: "array of objects",
+    };
+    let items = value.as_array().ok_or(expected.clone())?;
+    if items.len() != nodes {
+        return Err(WireRefusal::Hops {
+            count: items.len(),
+            nodes,
+        });
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            if item.as_object().is_none() {
+                return Err(expected.clone());
+            }
+            fields(item).map_err(|refusal| WireRefusal::Hop {
+                index,
+                refusal: Box::new(refusal),
+            })
+        })
+        .collect()
+}
+
 /// The argument `outcome`: an object with a kind and an optional reason. An empty reason is no
 /// reason.
 fn outcome(arguments: &Json) -> Result<Option<Outcome>, WireRefusal> {
@@ -820,4 +961,85 @@ fn outcome(arguments: &Json) -> Result<Option<Outcome>, WireRefusal> {
         }
     };
     Ok(Some(Outcome { kind, reason }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(name: &str) -> ObjectId {
+        ObjectId::new(name).unwrap()
+    }
+
+    fn round_trip(change: &Change) -> Change {
+        let (name, arguments) = encode(change);
+        decode(name, &Json::parse(&arguments.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn add_flow_with_a_magnitude_a_group_a_reply_and_hops_gives_the_same_change() {
+        let change = Change::AddFlow {
+            id: id("reply"),
+            path: vec![id("dns"), id("fw-01"), id("client")],
+            outcome: Some(Outcome {
+                kind: OutcomeKind::Unknown,
+                reason: None,
+            }),
+            magnitude: Some(Magnitude {
+                value: 0.1,
+                unit: Unit::PacketPerSecond,
+            }),
+            group: Some("q1".to_owned()),
+            reply_to: Some(id("request")),
+            hops: vec![
+                vec![("ingress".to_owned(), "eth0".to_owned())],
+                Vec::new(),
+                vec![("result".to_owned(), "exit".to_owned())],
+            ],
+            fields: vec![("protocol".to_owned(), "udp".to_owned())],
+        };
+        assert_eq!(round_trip(&change), change);
+        for unit in Unit::ALL {
+            let change = Change::AddFlow {
+                id: id("f"),
+                path: vec![id("a"), id("b")],
+                outcome: None,
+                magnitude: Some(Magnitude {
+                    value: 1_200_000_000.0,
+                    unit,
+                }),
+                group: None,
+                reply_to: None,
+                hops: Vec::new(),
+                fields: Vec::new(),
+            };
+            assert_eq!(round_trip(&change), change);
+        }
+    }
+
+    #[test]
+    fn set_look_with_widths_and_scale_gives_the_same_change() {
+        for widths in [Widths::Magnitude, Widths::Uniform] {
+            for scale in [Scale::Log, Scale::Linear] {
+                let change = Change::SetLook {
+                    look: Look {
+                        widths,
+                        scale,
+                        ..Look::default()
+                    },
+                };
+                assert_eq!(round_trip(&change), change);
+            }
+        }
+        let (_, arguments) = encode(&Change::SetLook {
+            look: Look::default(),
+        });
+        assert_eq!(arguments.get("widths"), Some(&Json::string("magnitude")));
+        assert_eq!(arguments.get("scale"), Some(&Json::string("log")));
+        let refusal = decode("set_look", &Json::parse(r#"{"scale":"sqrt"}"#).unwrap());
+        assert_eq!(
+            refusal.unwrap_err().to_string(),
+            "scale: sqrt, valid: log, linear"
+        );
+    }
 }
