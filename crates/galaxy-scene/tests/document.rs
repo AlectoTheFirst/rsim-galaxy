@@ -170,10 +170,6 @@ fn answer_names_the_ignored_members_and_lines_and_the_members_not_shown() {
             "node.handle",
             "link",
             "flow.fields.missing",
-            "flow.hops",
-            "flow.magnitude",
-            "flow.group",
-            "flow.reply_to",
             "flow.handle",
         ]
     );
@@ -935,4 +931,57 @@ fn parse_limited_refuses_a_text_with_more_values_than_the_limit() {
     let error = Json::parse_limited(text, 4).unwrap_err();
     assert_eq!(error.cause, "more values than the limit");
     assert_eq!(Json::parse_limited(text, 5), Json::parse(text));
+}
+
+#[test]
+fn a_load_gives_the_magnitude_the_group_the_reply_and_the_hops_to_the_flows_and_the_window_to_the_relations()
+ {
+    let text = r#"{"format":"galaxy-relations","version":"0.1","source":{"name":"example","snapshot":"snap-1","query":"q","window":{"from":"2026-11-23T12:00:00Z","to":"2026-11-23T12:01:00Z"}},"nodes":[{"id":"a","kind":"endpoint"},{"id":"b","kind":"endpoint"}],"flows":[{"id":"request","path":["a","b"],"hops":[{"fields":{"ingress":"eth0","up":true}},{}],"magnitude":{"value":1500,"unit":"packet"},"group":"q1"},{"id":"reply","path":["b","a"],"magnitude":{"value":0,"unit":"packet"},"reply_to":"request"}]}"#;
+    let loaded = load(text);
+    let relations = loaded.relations();
+    assert_eq!(
+        relations.window(),
+        Some(&[
+            "2026-11-23T12:00:00Z".to_owned(),
+            "2026-11-23T12:01:00Z".to_owned()
+        ])
+    );
+    assert_eq!(relations.unit(), Some(galaxy_scene::Unit::Packet));
+    let [request, reply] = relations.flows() else {
+        panic!("2 flows");
+    };
+    assert_eq!(
+        request.magnitude,
+        Some(galaxy_scene::Magnitude {
+            value: 1500.0,
+            unit: galaxy_scene::Unit::Packet,
+        })
+    );
+    assert_eq!(request.group.as_deref(), Some("q1"));
+    assert_eq!(
+        request.hops,
+        [
+            vec![
+                ("ingress".to_owned(), "eth0".to_owned()),
+                ("up".to_owned(), "true".to_owned())
+            ],
+            Vec::new()
+        ]
+    );
+    assert_eq!(request.reply_to, None);
+    assert_eq!(
+        reply.reply_to.as_ref().map(|id| id.as_str()),
+        Some("request")
+    );
+    assert_eq!(reply.magnitude.map(|magnitude| magnitude.value), Some(0.0));
+    assert!(loaded.answer().not_shown.is_empty());
+    let mut model = Model::new(Style::default());
+    model.apply(Change::Load(loaded)).unwrap();
+    let world = model.world();
+    assert_eq!(world.vmax(), 1500.0);
+    assert!(
+        world
+            .describe()
+            .starts_with("window from=2026-11-23T12:00:00Z to=2026-11-23T12:01:00Z\n")
+    );
 }

@@ -107,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         camera: &camera,
         details: &[],
         scale: 1.0,
+        time: 0.0,
     };
     let image = Renderer::new()?.render(&view, 1600, 1000)?;
     image.write_png(BufWriter::new(File::create(path)?))?;

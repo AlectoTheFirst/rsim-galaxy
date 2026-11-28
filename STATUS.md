@@ -25,11 +25,13 @@ Complete:
 - the load: the reader of a relations document and of a stream of joined pages with the checks, the limits and the versions of the format, the framing of the pages with the place of each line, the first 20 refusals in the order of the document, the members of a document in the order of the text, the answer with the source, the counts, the kinds, the unit, partial, ignored by the name rule up to 64 names and not_shown, the load as 1 entry of the log with undo of the whole load, the wire form `load_view` with the `sha256` of the bytes, and SHA-256
 - the wire form with a JSON schema for each operation, and the refusal of a JSON object with a member name 2 times, of a `\u` escape with no 4 hex digits, of a field name outside the name rule, of more than 64 fields and of a text value of a field outside 1 to 1024 characters
 - the scene of the primitives globe, building, arc and label with its operations and its log
+- the flow data in the relations: the magnitude with its unit, the window of a load, the group, the reply and the hops of a flow, with the refusals of `add_flow`, the reader, the world text and the largest magnitude of a world
+- the look values widths (magnitude, uniform) and scale (log, linear)
+- the built-in flow materials flow-1, flow-2, flow-drop, flow-loop, flow-unknown and flow-reply
 
 Open:
 
 - the arrangements ring and shell on a globe
-- the flow data: direction and magnitude
 - the scene of the primitives and the world as 1 model
 
 ## galaxy-render
@@ -38,12 +40,14 @@ Complete:
 
 - the frame of a world into a window or an image, and its PNG file
 - the virtual detail: the detail state of each node from its size on the screen, the culling of the nodes and of the marks of the flow lines outside the view, the lanes of the drawn paths, and the trunks of the flows below 2 pixels of spacing
-- 1 thickness for each flow line, 2 pixels or more on each piece of a segment, and no line inside a node of its path that is not open
-- the flow lines in their lanes with a casing and no casing on a lane change, the start dot, the arrowheads in the direction of travel every 160 pixels and on each leg between 2 nodes, clear of crossings and bends, the colour of the outcome, the stop mark of a dropped flow, and the halo of a selected flow
+- 1 thickness for each flow line from its magnitude on the log or the linear scale, or uniform, the sum of the magnitudes of a trunk, 2 pixels or more on each piece of a segment, and no line inside a node of its path that is not open
+- the flow lines in their lanes with a casing and no casing on a lane change, the start dot, the arrowheads in the direction of travel every 160 pixels and on each leg between 2 nodes, clear of crossings and bends, the colour of the flow materials with the colours of set_material, the colour of a group, the stop mark of a dropped flow, the halo of a selected flow and the casing of the other branches of its group
+- the dashes of a reply from its start dot, with the casing through the gaps
+- the packets on virtual time from the host program, and the selection of a trunk
 - the home view that fills the frame
 - the looks: perspective and isometric, ground and floating, sun and flat light, crisp and glow lines, light and dark scheme
 - the floor grid and the compass
-- the mesh registry with the meshes of the shapes box, cylinder, router, switch, firewall, device, access-point, workstation, cloud, layer3-switch, server, laptop and load-balancer, and of the arrowheads, and the material slots body, symbol, brick, flame, mortar and flame core with a colour for each scheme
+- the mesh registry with the meshes of the shapes box, cylinder, router, switch, firewall, device, access-point, workstation, cloud, layer3-switch, server, laptop and load-balancer, and of the arrowheads, and the material slots body, symbol, brick, flame, mortar, flame core and the 6 flow materials with a colour for each scheme
 - the symbol of the router, the switch, the layer-3 switch, the access point and the load balancer on its top and on its front, the top symbol hidden below 4 pixels and the front symbol below a stroke of 1.8 pixels, by 1 rule in a stack and alone
 - the symbols of the router, the switch, the layer-3 switch, the access point and the load balancer, the flame of the firewall and the symbols of the defined shapes in the aspect of their reference size at each node size, each filling its face on the shorter side
 - the stadium of the router and the round corners of the access point at each node size
@@ -60,7 +64,7 @@ Complete:
 
 Open:
 
-- the dashed line of a reply
+- the hatch beside a panel value with no information
 - the blend between 2 detail states
 - cast shadows and ambient occlusion
 - the import of meshes through the crate `gltf`
@@ -71,7 +75,9 @@ Complete:
 
 - the desktop window with the camera and the selection, with the panel of the selected object and its line `label`, and the scale factor of the window for the labels, the panel and the compass
 - the MCP server with the tools of the wire form and the tools undo, describe, frame and sources
-- the operation file, the frame with no window and the operation log as an operation file
+- the operation file, the frame with no window with `--time` and the operation log as an operation file
+- the panel lines of a flow with its magnitude, the window, its group, its request, its replies and its hops, and of a trunk with its count and its sum
+- the time line of the window with play, pause, step, speed and position on virtual time
 - the label lines of a frame in the text of the tool `frame` and on the standard error of `--png`
 - the configuration of the sources with its checks and the credential references `env:` and `file:`
 - `load_view` over the MCP transport with pages and from a file, the answer to `ping` and the refusal of each other request of the source, the limits of the pages, the lines and the cursor, the limits of a `.json` and a `.jsonl` file before it is read, a `.json` file as a document and a `.jsonl` file as a stream, the command of a source in the directory of the configuration, the kept bytes in `galaxy-documents` as sent, the replay of a load from the kept bytes for a source of the configuration, and the refusals of the arguments, no_source, source, credential and line

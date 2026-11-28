@@ -2,13 +2,17 @@ use std::io::BufRead;
 use std::sync::Arc;
 
 use galaxy_render::{Camera, Renderer, Selection, View};
-use galaxy_scene::{Change, Json, Load, Model, ObjectId, Style, World, wire};
+use galaxy_scene::{Change, FlowLine, Json, Load, Model, ObjectId, Style, World, wire};
 
 use crate::load;
 use crate::sources::Sources;
 
 /// Size of the frame of the tool `frame` with no size in its arguments.
 const FRAME: [u32; 2] = [1280, 800];
+/// The largest count of the nodes of a path whose panel shows each hop.
+pub const HOPS: usize = 64;
+/// The value of a panel line with no information.
+const NOT_AVAILABLE: &str = "not available";
 
 /// The tools of the viewer: undo, describe, frame and sources.
 pub const TOOLS: &[wire::Tool] = &[
@@ -68,6 +72,11 @@ pub struct Viewer {
     pub world: World,
     pub selection: Option<Selection>,
     pub sources: Option<Arc<Sources>>,
+    /// The virtual time in seconds of each frame.
+    pub time: f64,
+    /// The index in the path of the selected flow of the hop in its panel, for a path of more
+    /// than `HOPS` nodes.
+    pub hop: usize,
     /// `true` when `world` is not the world of `model`.
     stale: bool,
     /// The renderer of `frame` with no renderer in its call, opened on its first use.
@@ -88,6 +97,8 @@ impl Viewer {
             model,
             selection: None,
             sources,
+            time: 0.0,
+            hop: 0,
             stale: false,
             renderer: None,
         }
@@ -303,8 +314,9 @@ impl Viewer {
     }
 
     /// The lines of the panel of the selection: the name, then a name and a value for the kind,
-    /// the label, the parent and each field of the source of a node, or for the outcome, its
-    /// reason, each field of the source and each node of the path of a flow.
+    /// the label, the parent and each field of the source of a node, the lines of `flow_details`
+    /// for a flow, and the count of the flows, the sum of their magnitudes and the count of the
+    /// flows with no magnitude for a trunk.
     pub fn details(&self) -> Vec<(String, String)> {
         let Some(selection) = &self.selection else {
             return Vec::new();
@@ -328,28 +340,152 @@ impl Viewer {
                 lines.extend(node.fields.iter().cloned());
                 lines
             }
-            Selection::Flow(id) => {
-                let Some(flow) = self.world.flows().iter().find(|flow| &flow.id == id) else {
-                    return Vec::new();
-                };
-                let mut lines = vec![
-                    (String::new(), flow.id.to_string()),
-                    ("kind".to_owned(), "flow".to_owned()),
-                ];
-                if let Some(outcome) = &flow.outcome {
-                    lines.push(("outcome".to_owned(), outcome.kind.name().to_owned()));
-                    if let Some(reason) = &outcome.reason {
-                        lines.push(("reason".to_owned(), reason.clone()));
-                    }
-                }
-                lines.extend(flow.fields.iter().cloned());
-                for (step, node) in flow.path.iter().enumerate() {
-                    let name = if step == 0 { "path" } else { "" };
-                    lines.push((format!("{name:<4}"), node.to_string()));
-                }
-                lines
+            Selection::Flow(id) => match self.world.flows().iter().find(|flow| &flow.id == id) {
+                Some(flow) => self.flow_details(flow),
+                None => Vec::new(),
+            },
+            Selection::Trunk(ids) => self.trunk_details(ids),
+        }
+    }
+
+    /// The lines of the panel of `flow`: its id, its kind, its outcome, its reason, its
+    /// magnitude, the window of a count unit, its group with the count of its branches, its
+    /// request, its replies, the data of the source, then its path with its hops. A path of up
+    /// to `HOPS` nodes has 1 line for each node with the fields of its hop after it. A longer
+    /// path has the count of its hops and the node and the fields of the hop `self.hop`.
+    fn flow_details(&self, flow: &FlowLine) -> Vec<(String, String)> {
+        let mut lines = vec![
+            (String::new(), flow.id.to_string()),
+            ("kind".to_owned(), "flow".to_owned()),
+        ];
+        if let Some(outcome) = &flow.outcome {
+            lines.push(("outcome".to_owned(), outcome.kind.name().to_owned()));
+            if let Some(reason) = &outcome.reason {
+                lines.push(("reason".to_owned(), reason.clone()));
             }
         }
+        match &flow.magnitude {
+            Some(magnitude) => {
+                lines.push((
+                    "magnitude".to_owned(),
+                    format!("{} {}", magnitude.value, magnitude.unit.name()),
+                ));
+                if magnitude.unit.is_count()
+                    && let Some([from, to]) = self.world.window()
+                {
+                    lines.push(("window from".to_owned(), from.clone()));
+                    lines.push(("window to".to_owned(), to.clone()));
+                }
+            }
+            None if self.world.unit().is_some() => {
+                lines.push(("magnitude".to_owned(), NOT_AVAILABLE.to_owned()));
+            }
+            None => {}
+        }
+        if let Some(group) = &flow.group {
+            let branches = self
+                .world
+                .flows()
+                .iter()
+                .filter(|other| other.group.as_ref() == Some(group))
+                .count();
+            lines.push(("group".to_owned(), group.clone()));
+            lines.push(("branches".to_owned(), branches.to_string()));
+        }
+        if let Some(request) = &flow.reply_to {
+            lines.push(("reply to".to_owned(), request.to_string()));
+        }
+        let replies = self
+            .world
+            .flows()
+            .iter()
+            .filter(|other| other.reply_to.as_ref() == Some(&flow.id));
+        for (index, reply) in replies.enumerate() {
+            let name = if index == 0 { "replies" } else { "" };
+            lines.push((format!("{name:<7}"), reply.id.to_string()));
+        }
+        lines.extend(flow.fields.iter().cloned());
+        let hop_lines = |lines: &mut Vec<(String, String)>, step: usize| {
+            if let Some(fields) = flow.hops.get(step) {
+                for (name, value) in fields {
+                    lines.push((format!("  {name}"), value.clone()));
+                }
+            }
+        };
+        if flow.path.len() <= HOPS {
+            for (step, node) in flow.path.iter().enumerate() {
+                let name = if step == 0 { "path" } else { "" };
+                lines.push((format!("{name:<4}"), node.to_string()));
+                hop_lines(&mut lines, step);
+            }
+        } else {
+            let step = self.hop.min(flow.path.len() - 1);
+            lines.push(("hops".to_owned(), flow.path.len().to_string()));
+            lines.push(("node".to_owned(), flow.path[step].to_string()));
+            hop_lines(&mut lines, step);
+        }
+        lines
+    }
+
+    /// The lines of the panel of the trunk of the flows `ids`: the count of its flows, the sum
+    /// of their magnitudes with the unit of the world, and the count of the flows with no
+    /// magnitude when it is above 0.
+    fn trunk_details(&self, ids: &[ObjectId]) -> Vec<(String, String)> {
+        let flows: Vec<&FlowLine> = self
+            .world
+            .flows()
+            .iter()
+            .filter(|flow| ids.contains(&flow.id))
+            .collect();
+        if flows.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![
+            (String::new(), "trunk".to_owned()),
+            ("flows".to_owned(), flows.len().to_string()),
+        ];
+        let sum: f64 = flows
+            .iter()
+            .filter_map(|flow| flow.magnitude.map(|magnitude| magnitude.value))
+            .sum();
+        lines.push((
+            "sum".to_owned(),
+            match self.world.unit() {
+                Some(unit) => format!("{sum} {}", unit.name()),
+                None => NOT_AVAILABLE.to_owned(),
+            },
+        ));
+        let none = flows.iter().filter(|flow| flow.magnitude.is_none()).count();
+        if none > 0 {
+            lines.push(("no magnitude".to_owned(), none.to_string()));
+        }
+        lines
+    }
+
+    /// The index in the path of the selected flow of the node whose centre is nearest to the
+    /// pixel `pick` in a frame of `width` by `height` pixels from `camera`, the first on equal
+    /// distances. 0 with no selected flow or no node in front of the camera.
+    pub fn nearest_hop(&self, camera: &Camera, width: u32, height: u32, pick: [f32; 2]) -> usize {
+        let Some(Selection::Flow(id)) = &self.selection else {
+            return 0;
+        };
+        let Some(flow) = self.world.flows().iter().find(|flow| &flow.id == id) else {
+            return 0;
+        };
+        let look = self.model.style().look;
+        let mut nearest: Option<(usize, f32)> = None;
+        for (step, &node) in flow.nodes.iter().enumerate() {
+            let (_, placed, _) = self.world.node(node);
+            let centre = placed.centre;
+            let Some([x, y]) = camera.project(&look, centre, width, height) else {
+                continue;
+            };
+            let distance = (x - pick[0]).hypot(y - pick[1]);
+            if nearest.is_none_or(|(_, least)| distance < least) {
+                nearest = Some((step, distance));
+            }
+        }
+        nearest.map_or(0, |(step, _)| step)
     }
 
     /// Expands the world of the model when `world` is stale, and clears a selection that is not
@@ -363,6 +499,9 @@ impl Viewer {
         let present = match &self.selection {
             Some(Selection::Node(id)) => self.world.index(id).is_some(),
             Some(Selection::Flow(id)) => self.world.flows().iter().any(|flow| &flow.id == id),
+            Some(Selection::Trunk(ids)) => ids
+                .iter()
+                .all(|id| self.world.flows().iter().any(|flow| &flow.id == id)),
             None => true,
         };
         if !present {
@@ -405,8 +544,8 @@ impl Viewer {
     }
 
     /// The PNG image of the frame of `width` by `height` pixels from `camera`, or from the home
-    /// view, at the scale factor 1. The text is the line `<width>x<height>`, then the lines of
-    /// the labels of the frame.
+    /// view, at the scale factor 1 and the time `self.time`. The text is the line
+    /// `<width>x<height>`, then the lines of the labels of the frame.
     fn draw(&self, renderer: &Renderer, camera: Option<Camera>, width: u32, height: u32) -> Reply {
         let look = self.model.style().look;
         let camera = camera
@@ -419,6 +558,7 @@ impl Viewer {
             camera: &camera,
             details: &details,
             scale: 1.0,
+            time: self.time,
         };
         let image = match renderer.render(&view, width, height) {
             Ok(image) => image,

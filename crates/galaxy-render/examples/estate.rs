@@ -1,18 +1,19 @@
 //! Builds an estate of 100 sites with 4 rooms each, 25 routers and 125 endpoints in each room,
-//! and 1,000 flows, then prints the time of the expansion, of the frames and of the label pass at
+//! and 1,000 flows with a magnitude, with a reply for each of the first 500 flows, then prints the time of the expansion, of the frames and of the label pass at
 //! 2560 by 1440 pixels from the home view, from a view of 1 site and from a view of 1 room, with
 //! the counts of the shown and the hidden labels.
 
 use std::time::Instant;
 
 use galaxy_render::{Camera, Renderer, View};
-use galaxy_scene::{Look, ObjectId, Relations, Style, World};
+use galaxy_scene::{Flow, Look, Magnitude, ObjectId, Relations, Style, Unit, World};
 
 const SITES: usize = 100;
 const ROOMS: usize = 4;
 const ROUTERS: usize = 25;
 const ENDPOINTS: usize = 5;
 const FLOWS: usize = 1_000;
+const REPLIES: usize = 500;
 const WIDTH: u32 = 2560;
 const HEIGHT: u32 = 1440;
 const FRAMES: u32 = 20;
@@ -68,7 +69,24 @@ fn estate() -> Result<Relations, Box<dyn std::error::Error>> {
             continue;
         }
         let path = vec![source, source_router, target_router, target];
-        relations.add_flow(id(format!("f{flow}")), path)?;
+        let magnitude = |value: usize| {
+            Some(Magnitude {
+                value: (value % 1000 + 1) as f64 * 1e6,
+                unit: Unit::BitPerSecond,
+            })
+        };
+        let reversed: Vec<ObjectId> = path.iter().rev().cloned().collect();
+        relations.add_flow_with_data(Flow {
+            magnitude: magnitude(flow * 7919),
+            ..Flow::new(id(format!("f{flow}")), path)
+        })?;
+        if flow < REPLIES {
+            relations.add_flow_with_data(Flow {
+                magnitude: magnitude(flow * 104_729),
+                reply_to: Some(id(format!("f{flow}"))),
+                ..Flow::new(id(format!("f{flow}-reply")), reversed)
+            })?;
+        }
     }
     Ok(relations)
 }
@@ -159,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             camera: &camera,
             details: &[],
             scale: 1.0,
+            time: 0.0,
         };
         frames(&renderer, &view, label)?;
     }

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use galaxy_scene::{
-    Arrangement, Broken, Library, Node, ObjectId, RelationRefusal, Relations, Rule, RuleSet, Shape,
-    Style, World,
+    Arrangement, Broken, Flow, Library, Magnitude, Node, ObjectId, RelationRefusal, Relations,
+    Rule, RuleSet, Shape, Style, Unit, World,
 };
 
 fn id(name: &str) -> ObjectId {
@@ -1270,4 +1270,157 @@ fn flow_line_through_a_node_outside_its_parent_is_a_broken_rule() {
         .collect();
     assert!(!expected.is_empty());
     assert_eq!(found, expected);
+}
+
+/// The relations of 2 endpoints with a window, a request with a magnitude, a group and hops,
+/// and its reply.
+fn flow_data() -> Relations {
+    let mut relations = relations(&[
+        ("group", "group", None),
+        ("a", "endpoint", Some("group")),
+        ("b", "endpoint", Some("group")),
+    ]);
+    relations.set_window(Some([
+        "2026-11-23T12:00:00Z".to_owned(),
+        "2026-11-23T12:01:00Z".to_owned(),
+    ]));
+    let magnitude = |value| {
+        Some(Magnitude {
+            value,
+            unit: Unit::Packet,
+        })
+    };
+    relations
+        .add_flow_with_data(Flow {
+            magnitude: magnitude(1200.0),
+            group: Some("q1".to_owned()),
+            hops: vec![
+                vec![("ingress".to_owned(), "eth0".to_owned())],
+                vec![
+                    ("result".to_owned(), "deliver".to_owned()),
+                    ("hits".to_owned(), "2".to_owned()),
+                ],
+            ],
+            ..Flow::new(id("request"), vec![id("a"), id("b")])
+        })
+        .unwrap();
+    relations
+        .add_flow_with_data(Flow {
+            magnitude: magnitude(0.5),
+            reply_to: Some(id("request")),
+            hops: vec![Vec::new(), Vec::new()],
+            ..Flow::new(id("reply"), vec![id("b"), id("a")])
+        })
+        .unwrap();
+    relations
+}
+
+#[test]
+fn world_text_has_the_window_the_magnitude_the_group_the_reply_and_the_hops() {
+    let world = World::expand(&flow_data(), &rules());
+    let text = world.describe();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "window from=2026-11-23T12:00:00Z to=2026-11-23T12:01:00Z"
+    );
+    let request = lines
+        .iter()
+        .position(|line| line.starts_with("request flow"))
+        .unwrap();
+    assert!(
+        lines[request - 1]
+            .starts_with("reply flow path=b,a magnitude=0.5 packet reply_to=request points="),
+        "{text}"
+    );
+    assert!(
+        lines[request].starts_with("request flow path=a,b magnitude=1200 packet group=q1 points="),
+        "{text}"
+    );
+    assert_eq!(
+        lines[request + 1..],
+        [
+            "request hop=0 node=a ingress=\"eth0\"",
+            "request hop=1 node=b result=\"deliver\" hits=\"2\"",
+        ]
+    );
+}
+
+#[test]
+fn world_with_no_window_has_no_window_line() {
+    let relations = relations(&[("a", "endpoint", None), ("b", "endpoint", None)]);
+    let world = World::expand(&with_flow(relations, "f", &["a", "b"]), &rules());
+    assert!(!world.describe().contains("window"));
+}
+
+#[test]
+fn vmax_is_the_largest_magnitude_of_the_world_and_0_with_none() {
+    let world = World::expand(&flow_data(), &rules());
+    assert_eq!(world.vmax(), 1200.0);
+    assert_eq!(world.unit(), Some(Unit::Packet));
+    let relations = relations(&[("a", "endpoint", None), ("b", "endpoint", None)]);
+    let world = World::expand(&with_flow(relations, "f", &["a", "b"]), &rules());
+    assert_eq!(world.vmax(), 0.0);
+}
+
+#[test]
+fn flow_with_another_hop_count_a_reply_to_no_request_or_another_unit_is_refused() {
+    let mut data = flow_data();
+    let before = data.clone();
+    let path = || vec![id("a"), id("b")];
+    let magnitude = |unit| Some(Magnitude { value: 1.0, unit });
+    let cases = [
+        (
+            Flow {
+                hops: vec![Vec::new()],
+                ..Flow::new(id("f"), path())
+            },
+            "hops: 1 items, valid: 2 items",
+        ),
+        (
+            Flow {
+                reply_to: Some(id("missing")),
+                ..Flow::new(id("f"), path())
+            },
+            "reply_to: missing, valid: a flow with no reply_to",
+        ),
+        (
+            Flow {
+                reply_to: Some(id("reply")),
+                ..Flow::new(id("f"), path())
+            },
+            "reply_to: reply, valid: a flow with no reply_to",
+        ),
+        (
+            Flow {
+                magnitude: magnitude(Unit::BitPerSecond),
+                ..Flow::new(id("f"), path())
+            },
+            "magnitude.unit: bit/s, valid: packet",
+        ),
+    ];
+    for (flow, text) in cases {
+        let refusal = data.add_flow_with_data(flow).unwrap_err();
+        assert_eq!(refusal.to_string(), text);
+        assert_eq!(data, before);
+    }
+    let mut windowless = relations(&[("a", "endpoint", None), ("b", "endpoint", None)]);
+    let refusal = windowless
+        .add_flow_with_data(Flow {
+            magnitude: magnitude(Unit::Byte),
+            ..Flow::new(id("f"), path())
+        })
+        .unwrap_err();
+    assert_eq!(refusal, RelationRefusal::Window { unit: Unit::Byte });
+    assert_eq!(
+        refusal.to_string(),
+        "magnitude.unit: byte, valid: bit/s, packet/s"
+    );
+    windowless
+        .add_flow_with_data(Flow {
+            magnitude: magnitude(Unit::BitPerSecond),
+            ..Flow::new(id("f"), path())
+        })
+        .unwrap();
+    assert_eq!(windowless.unit(), Some(Unit::BitPerSecond));
 }

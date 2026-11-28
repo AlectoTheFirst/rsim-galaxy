@@ -175,6 +175,7 @@ struct Fragment {
     @location(7) @interpolate(flat) low: vec3<f32>,
     @location(8) @interpolate(flat) high: vec3<f32>,
     @location(9) @interpolate(flat) plate: f32,
+    @location(10) @interpolate(flat) dash: vec3<f32>,
 }
 
 @vertex
@@ -211,6 +212,7 @@ fn place(corner: Corner, instance: Instance, world: vec3<f32>, fitted: Fitted) -
     out.low = instance.centre.xyz - instance.size.xyz * 0.5;
     out.high = instance.centre.xyz + instance.size.xyz * 0.5;
     out.plate = instance.reference.y;
+    out.dash = instance.reference;
     return out;
 }
 
@@ -288,6 +290,24 @@ fn glow_main(fragment: Fragment) -> @location(0) vec4<f32> {
     }
     let fall = clamp(1.0 - distance, 0.0, 1.0);
     return vec4<f32>(fragment.colour.rgb, fall * fall * 0.55);
+}
+
+// A dash of the line of a reply in its colour. `dash.x` is the period, negative for a line toward
+// the low end of the axis, `dash.y` the length of a dash, and `dash.z` the axis plus 0.25 plus
+// half the phase at the low end of the box as a part of the period. A fragment in a gap is
+// discarded.
+@fragment
+fn dash_main(fragment: Fragment) -> @location(0) vec4<f32> {
+    let period = max(abs(fragment.dash.x), 1e-9);
+    let axis = min(u32(max(floor(fragment.dash.z), 0.0)), 2u);
+    let phase = (fragment.dash.z - f32(axis) - 0.25) * 2.0 * period;
+    let along = fragment.world[axis] - fragment.low[axis];
+    let value = phase + sign(fragment.dash.x) * along;
+    let place = value - floor(value / period) * period;
+    if place >= fragment.dash.y {
+        discard;
+    }
+    return vec4<f32>(fragment.colour.rgb, 1.0);
 }
 
 // The soft shadow on the floor: the alpha falls from the opacity in `colour.a` in the middle of

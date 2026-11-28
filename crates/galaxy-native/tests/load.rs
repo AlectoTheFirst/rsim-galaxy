@@ -853,7 +853,7 @@ fn the_log_option_writes_the_operation_log_as_an_operation_file() {
     assert_eq!(
         written,
         format!(
-            "{{\"name\":\"set_look\",\"arguments\":{{\"projection\":\"perspective\",\"space\":\"ground\",\"light\":\"sun\",\"lines\":\"crisp\",\"scheme\":\"dark\"}}}}\n\
+            "{{\"name\":\"set_look\",\"arguments\":{{\"projection\":\"perspective\",\"space\":\"ground\",\"light\":\"sun\",\"lines\":\"crisp\",\"scheme\":\"dark\",\"widths\":\"magnitude\",\"scale\":\"log\"}}}}\n\
              {{\"name\":\"load_view\",\"arguments\":{{\"source\":\"files\",\"query\":\"site-a\",\"sha256\":\"{hash}\"}}}}\n"
         )
     );
