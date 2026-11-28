@@ -2,7 +2,7 @@ use galaxy_render::label::{Candidate, Cause, Grid, Hidden, Labels, Shown, order,
 use galaxy_render::mesh::{
     Fit, Material, Mesh, Regions, Registry, Vertex, build, count, fitted, forms, reference, region,
 };
-use galaxy_render::text::{Atlas, Face, Fonts, SPREAD, raster};
+use galaxy_render::text::{Atlas, Face, Fonts, RESIDUE, SPREAD, distance_field, raster};
 use galaxy_scene::{Axis, Colours, DefinedShape, Library, ObjectId, Part, Shape, Solid, Style};
 
 /// Edge thickness of the test positions of the bars.
@@ -786,10 +786,10 @@ fn distance_of_a_pixel_on_the_outline_of_the_master_raster_is_one_half_within_on
             assert_eq!(raster.coverage.len(), raster.width * raster.height);
             let mut outline = 0;
             for (coverage, field) in raster.coverage.iter().zip(&raster.field) {
-                if *coverage > 0.0 && *coverage < 1.0 {
+                if *coverage > RESIDUE && *coverage < 1.0 - RESIDUE {
                     outline += 1;
                     assert!((field - 0.5).abs() <= 1.0 / 16.0, "{character} {field}");
-                } else if *coverage >= 1.0 {
+                } else if *coverage >= 0.5 {
                     assert!(*field > 0.5, "{character} {field}");
                 } else {
                     assert!(*field < 0.5, "{character} {field}");
@@ -804,6 +804,43 @@ fn distance_of_a_pixel_on_the_outline_of_the_master_raster_is_one_half_within_on
             }
             assert!(raster.width > 2 * border && raster.height > 2 * border);
         }
+    }
+}
+
+#[test]
+fn coverage_residue_inside_and_outside_a_ring_gives_the_distance_to_the_edge() {
+    let size = 64;
+    let coverage: Vec<f32> = (0..size * size)
+        .map(|pixel| {
+            let [x, y] = [pixel % size, pixel / size];
+            let outer = (8..56).contains(&x) && (8..56).contains(&y);
+            let hole = (20..44).contains(&x) && (20..44).contains(&y);
+            match (outer, hole) {
+                (true, false) => 1.0 - 1e-6,
+                (true, true) => 1e-6,
+                _ => 0.0,
+            }
+        })
+        .collect();
+    let field = distance_field(&coverage, size, size);
+    let range = (2 * SPREAD * 4) as f32;
+    let centre = field[31 * size + 31];
+    assert!((centre - (0.5 - 11.5 / range)).abs() < 1e-6, "{centre}");
+    let ring = field[31 * size + 14];
+    assert!((ring - (0.5 + 5.5 / range)).abs() < 1e-6, "{ring}");
+}
+
+#[test]
+fn field_at_the_centre_of_the_counter_of_o_is_2_texels_or_more_outside_the_edge() {
+    let fonts = Fonts::new();
+    for face in [Face::Label, Face::Value, Face::Title, Face::Name] {
+        let raster = raster(&fonts, face, 'o').unwrap();
+        let row = (0..raster.height)
+            .filter(|&row| raster.coverage[row * raster.width + raster.width / 2] >= 0.5)
+            .collect::<Vec<_>>();
+        let middle = (row[0] + row[row.len() - 1]) / 2;
+        let field = raster.field[middle * raster.width + raster.width / 2];
+        assert!(field < 0.5 - 2.0 / (2 * SPREAD) as f32, "{face:?} {field}");
     }
 }
 

@@ -29,6 +29,9 @@ const FIRST_QUADS: usize = 1024;
 /// Distance in texels of the atlas from the edge of a glyph at which the field reaches 0 or 1,
 /// and the border of a cell around the box of its glyph.
 pub const SPREAD: usize = 8;
+/// The largest distance of a coverage from 0 or 1 that the rasterizer leaves in a pixel wholly
+/// outside or wholly inside a glyph.
+pub const RESIDUE: f32 = 1.0 / 256.0;
 
 /// The face of a run of text: Inter at the weight 600 for a title, Inter at 400 for a name,
 /// JetBrains Mono at 400 for a value and JetBrains Mono at 600 for a label.
@@ -210,10 +213,10 @@ fn raster_glyph(fonts: &Fonts, face: Face, id: GlyphId) -> Option<Raster> {
 }
 
 /// The distance field of a coverage raster of `width` by `height` pixels at `STEP` pixels for 1
-/// texel of the atlas. A pixel with a coverage of 0.5 or more is inside. The distance of a pixel
-/// with a coverage between 0 and 1 is its coverage less 0.5. The distance of each other pixel is
-/// the distance of its centre to the centre of the nearest pixel on the other side, less 0.5,
-/// from 2 passes of 8SSEDT.
+/// texel of the atlas. A pixel with a coverage of 0.5 or more is inside. A pixel with a coverage
+/// above `RESIDUE` and below 1 less `RESIDUE` is on the edge, and its distance is its coverage
+/// less 0.5. The distance of each other pixel is the distance of its centre to the centre of the
+/// nearest pixel on the other side, less 0.5, from 2 passes of 8SSEDT.
 pub fn distance_field(coverage: &[f32], width: usize, height: usize) -> Vec<f32> {
     let inside: Vec<bool> = coverage.iter().map(|&value| value >= 0.5).collect();
     let outside: Vec<bool> = inside.iter().map(|&value| !value).collect();
@@ -224,7 +227,7 @@ pub fn distance_field(coverage: &[f32], width: usize, height: usize) -> Vec<f32>
         .iter()
         .enumerate()
         .map(|(pixel, &value)| {
-            let distance = if value > 0.0 && value < 1.0 {
+            let distance = if value > RESIDUE && value < 1.0 - RESIDUE {
                 value - 0.5
             } else if inside[pixel] {
                 to_outside[pixel] - 0.5
